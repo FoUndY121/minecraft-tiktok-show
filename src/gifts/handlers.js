@@ -1,14 +1,19 @@
+const ARENA = require('../config/arena')
 const { createObjectEvent } = require('../core/spawnQueue')
-const { spawnTntNearBot } = require('../effects/spawnTntNearBot')
-const { randomChaos, expensiveGiftWeather } = require('../effects/chaosEvents')
 const reactions = require('../bot/reactions')
-const { getGiftDefinition, normalizeGiftName, resolveGift } = require('./giftMap')
+const { randomChaos, expensiveGiftWeather } = require('../effects/chaosEvents')
+const { spawnTntNearBot } = require('../effects/spawnTntNearBot')
+const { lightningBurst, thunderSounds } = require('../effects/lightning')
+const { fireworksBurst } = require('../effects/fireworks')
+const { scanArenaForFlagBlocks } = require('../core/arenaScanner')
+const { normalizeGiftName, resolveGift } = require('./resolveGift')
 
 function extractGiftPayload(input = {}) {
 	const data = input.data || input
 
 	return {
-		giftKey: input.giftName || data.gift || data.giftName || data.name || 'Gift',
+		giftKey:
+			input.giftName || data.gift || data.giftName || data.name || 'Gift',
 		username:
 			input.username ||
 			data.nickname ||
@@ -21,8 +26,25 @@ function extractGiftPayload(input = {}) {
 	}
 }
 
-function createGiftHandlers({ bot, rcon, spawnQueue }) {
+function arenaForScan() {
+	return {
+		origin: ARENA.origin,
+		maxWidth: ARENA.width,
+		maxDepth: ARENA.depth,
+		maxHeight: ARENA.height,
+		maxStack: 6,
+	}
+}
+
+function createGiftHandlers({
+	bot,
+	rcon,
+	spawnQueue,
+	breakQueue = null,
+	arena = arenaForScan(),
+} = {}) {
 	const giftTimes = []
+	let lastCleanupAt = 0
 
 	function registerGiftRush() {
 		const now = Date.now()
@@ -33,45 +55,99 @@ function createGiftHandlers({ bot, rcon, spawnQueue }) {
 
 	function reactToGiftRush(count) {
 		if (count >= 12) {
-			reactions.rageReaction(bot, 900).catch(err =>
-				console.log('[GIFTS] rage reaction failed:', err?.message || err)
-			)
+			reactions
+				.rageReaction(bot, 900)
+				.catch(err =>
+					console.log('[GIFTS] rage reaction failed:', err?.message || err)
+				)
 		} else if (count >= 8) {
-			reactions.scaredLookAround(bot, 600).catch(err =>
-				console.log('[GIFTS] rush reaction failed:', err?.message || err)
-			)
+			reactions
+				.scaredLookAround(bot, 600)
+				.catch(err =>
+					console.log('[GIFTS] rush reaction failed:', err?.message || err)
+				)
 		}
 	}
 
-	function spawnChaos(definition, objectEvent = null) {
-		randomChaos({
-			bot,
-			rcon,
-			objectEvent,
-			giftValue: definition.giftValue || 1,
-		}).catch(err => console.log('[GIFTS] chaos failed:', err?.message || err))
+	async function maybeScheduleCleanup() {
+		if (!breakQueue) return
+		const idle =
+			breakQueue.isBreaking === false &&
+			Array.isArray(breakQueue.queue) &&
+			breakQueue.queue.length === 0
+		if (!idle) return
 
-		expensiveGiftWeather({ rcon, giftValue: definition.giftValue || 1 }).catch(err =>
-			console.log('[GIFTS] weather failed:', err?.message || err)
+		const now = Date.now()
+		if (now - lastCleanupAt < 6000) return
+
+		const positions = await scanArenaForFlagBlocks({ bot, arena })
+		if (!positions.length) return
+
+		lastCleanupAt = now
+		console.log(
+			`[GIFTS] arena has leftover flag blocks (${positions.length}), scheduling cleanup`
 		)
+
+		breakQueue.add({
+			id: `cleanup_${Date.now()}`,
+			type: 'CLEANUP_EXISTING_FLAGS',
+			country: 'cleanup',
+			scanExisting: true,
+		})
 	}
 
-	async function handleObjectGift({ definition, username, giftName, giftValue }) {
+	async function runResolvedEffects(resolved, objectEvent) {
+		const effects = resolved?.effects || []
+		if (!effects.length) return
+
+		for (const effect of effects) {
+			try {
+				if (effect === 'tnt_chaos') {
+					await spawnTntNearBot({
+						bot,
+						rcon,
+						fuse: 60,
+						source: resolved.key,
+						label: resolved.key,
+					})
+				} else if (effect === 'lightning') {
+					await thunderSounds({ rcon, objectEvent })
+					await lightningBurst({ rcon, objectEvent, min: 3, max: 3, radius: 7 })
+				} else if (effect === 'fireworks') {
+					await fireworksBurst({
+						rcon,
+						objectEvent,
+						min: 3,
+						max: 4,
+						delayMs: 100,
+					})
+				}
+			} catch (err) {
+				console.log('[GIFTS] effect failed:', effect, err?.message || err)
+			}
+		}
+	}
+
+	async function handleObjectGift({ resolved, username, giftName, giftValue }) {
 		const rushCount = registerGiftRush()
 		reactToGiftRush(rushCount)
 
 		const objectEvent = createObjectEvent({
-			country: definition.country,
+			country: resolved.country,
+			size: resolved.size,
 			username,
-			giftName: giftName || definition.giftName,
-			giftValue: giftValue || definition.giftValue,
+			giftName,
+			giftValue,
 		})
 
 		console.log(
-			`Gift: ${objectEvent.giftName} by ${objectEvent.username} -> ${definition.country} object`
+			`Gift: ${objectEvent.giftName} by ${objectEvent.username} -> ${
+				objectEvent.country
+			} size=${objectEvent.size || 'default'}`
 		)
 
-		if (objectEvent.giftValue >= 20) {
+		// Quick visible reaction
+		if (objectEvent.size === 'large') {
 			reactions.panicShakeCamera(bot, 500).catch(() => {})
 			reactions.exhaustedLookDown(bot, 450).catch(() => {})
 		} else {
@@ -79,46 +155,60 @@ function createGiftHandlers({ bot, rcon, spawnQueue }) {
 		}
 
 		spawnQueue.add(objectEvent)
-		spawnChaos({ ...definition, giftValue: objectEvent.giftValue }, objectEvent)
-	}
 
-	async function handleTntGift({ definition, giftValue }) {
-		const rushCount = registerGiftRush()
-		reactToGiftRush(rushCount)
-		console.log(`Gift: ${definition.giftName} -> TNT instant event`)
-
-		spawnTntNearBot({ bot, rcon, fuse: definition.fuse || 60 }).catch(err =>
-			console.log('[GIFTS] TNT failed:', err?.message || err)
+		// Auto-break safety: if bot missed a flag before, schedule cleanup.
+		maybeScheduleCleanup().catch(err =>
+			console.log('[GIFTS] cleanup check failed:', err?.message || err)
 		)
-		spawnChaos({ ...definition, giftValue: giftValue || definition.giftValue }, null)
+
+		// Always run tier-specific effects (if any)
+		runResolvedEffects(resolved, objectEvent).catch(() => {})
+
+		// Keep existing chaos system (probabilistic) + weather for big gifts
+		randomChaos({ bot, rcon, objectEvent, giftValue }).catch(err =>
+			console.log('[GIFTS] chaos failed:', err?.message || err)
+		)
+		expensiveGiftWeather({ rcon, giftValue }).catch(err =>
+			console.log('[GIFTS] weather failed:', err?.message || err)
+		)
 	}
 
 	return {
 		async handle(input = {}) {
 			const payload = extractGiftPayload(input)
-			const resolvedGift = resolveGift(payload.giftKey)
-			console.log(`[GIFT] raw="${payload.giftKey}" resolved="${resolvedGift || 'null'}"`)
+			const resolved = resolveGift(payload.giftKey)
+			console.log(
+				`[GIFT] raw="${payload.giftKey}" resolved="${resolved?.key || 'null'}"`
+			)
 
-			const definition = getGiftDefinition(payload.giftKey)
-			if (!definition) return { ok: false, reason: `Unknown gift: ${payload.giftKey}` }
-
-			if (definition.type === 'object') {
-				await handleObjectGift({
-					definition,
-					username: payload.username,
-					giftName: payload.giftName,
-					giftValue: payload.giftValue,
-				})
-			} else if (definition.type === 'tnt') {
-				await handleTntGift({ definition, username: payload.username, giftValue: payload.giftValue })
+			if (!resolved) {
+				// Strict matching: ignore unknown gifts.
+				return {
+					ok: true,
+					ignored: true,
+					reason: `Unknown gift: ${payload.giftKey}`,
+				}
 			}
+
+			await handleObjectGift({
+				resolved,
+				username: payload.username,
+				giftName: payload.giftName,
+				giftValue: payload.giftValue,
+			})
 
 			return { ok: true }
 		},
 	}
 }
 
-async function handleGift({ giftName, username = 'Someone', giftValue = 1, data = null, handlers }) {
+async function handleGift({
+	giftName,
+	username = 'Someone',
+	giftValue = 1,
+	data = null,
+	handlers,
+}) {
 	if (handlers?.handle) {
 		return await handlers.handle({
 			giftName,
@@ -130,7 +220,8 @@ async function handleGift({ giftName, username = 'Someone', giftValue = 1, data 
 
 	const key = normalizeGiftName(giftName)
 	const fn = handlers?.[key]
-	if (!fn) return { ok: false, reason: `Unknown gift: ${giftName}` }
+	if (!fn)
+		return { ok: true, ignored: true, reason: `Unknown gift: ${giftName}` }
 
 	await fn({ username, giftName: key })
 	return { ok: true }

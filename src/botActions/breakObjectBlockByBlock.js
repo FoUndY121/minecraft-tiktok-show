@@ -27,7 +27,10 @@ function digWithTimeout(bot, block, timeoutMs) {
 	return Promise.race([
 		bot.dig(block, true),
 		new Promise((_, reject) =>
-			setTimeout(() => reject(new Error(`dig timeout ${timeoutMs}ms`)), timeoutMs)
+			setTimeout(
+				() => reject(new Error(`dig timeout ${timeoutMs}ms`)),
+				timeoutMs
+			)
 		),
 	])
 }
@@ -45,16 +48,23 @@ async function breakEffects(commandBus, block) {
 
 	await safeSend(
 		commandBus,
-		`/particle minecraft:block minecraft:${blockName} ${p.x.toFixed(2)} ${p.y.toFixed(2)} ${p.z.toFixed(2)} 0.35 0.35 0.35 0.08 18 force`
+		`/particle minecraft:block minecraft:${blockName} ${p.x.toFixed(
+			2
+		)} ${p.y.toFixed(2)} ${p.z.toFixed(2)} 0.35 0.35 0.35 0.08 18 force`
 	)
 	await safeSend(
 		commandBus,
-		`/particle minecraft:dust 0.9 0.9 0.9 0.9 ${p.x.toFixed(2)} ${p.y.toFixed(2)} ${p.z.toFixed(2)} 0.22 0.22 0.22 0.02 8 force`
+		`/particle minecraft:dust 0.9 0.9 0.9 0.9 ${p.x.toFixed(2)} ${p.y.toFixed(
+			2
+		)} ${p.z.toFixed(2)} 0.22 0.22 0.22 0.02 8 force`
 	)
 	await safeSend(
 		commandBus,
-		`/playsound minecraft:block.sand.break block @a ${p.x.toFixed(2)} ${p.y.toFixed(2)} ${p.z.toFixed(2)} 0.4 ${(
-			0.85 + Math.random() * 0.25
+		`/playsound minecraft:block.sand.break block @a ${p.x.toFixed(
+			2
+		)} ${p.y.toFixed(2)} ${p.z.toFixed(2)} 0.4 ${(
+			0.85 +
+			Math.random() * 0.25
 		).toFixed(2)}`
 	)
 }
@@ -77,38 +87,58 @@ function shouldLogBlock(index) {
 	return index < 8 || index % 25 === 0
 }
 
-async function breakObjectBlockByBlock({ bot, rcon, objectEvent, options = {} }) {
+async function breakObjectBlockByBlock({
+	bot,
+	rcon,
+	objectEvent,
+	options = {},
+	onProgress = null,
+}) {
 	const cfg = { ...behavior, ...options }
 	const commandBus = rcon || bot
-	const targetBlock = getCountryBlock(objectEvent.country)
+	const scanExisting = objectEvent?.scanExisting === true
+	const targetBlock = scanExisting ? null : getCountryBlock(objectEvent.country)
 	const blockPositions = await findObjectBlocks({ bot, objectEvent })
+	const useStrictTarget = targetBlock && blockPositions.fallback !== true
 	let broken = 0
 	let fallbackBroken = 0
 
-	console.log(`[BOT] Breaking object ${objectEvent.country} id=${objectEvent.id}`)
+	console.log(
+		`[BOT] Breaking object ${objectEvent.country} id=${objectEvent.id}`
+	)
 
 	if (blockPositions.length === 0) {
-		console.log(`[BREAK] No object blocks found for country=${objectEvent.country}`)
+		console.log(
+			`[BREAK] No object blocks found for country=${objectEvent.country}`
+		)
 		return { ok: true, broken, fallbackBroken }
 	}
 
 	await prepareBot(bot, commandBus)
-	await reactions.lookAtFallingObject(bot, objectEvent).catch(err =>
-		console.log('[BOT] Initial look failed:', err?.message || err)
-	)
+	await reactions
+		.lookAtFallingObject(bot, objectEvent)
+		.catch(err =>
+			console.log('[BOT] Initial look failed:', err?.message || err)
+		)
 
 	for (let i = 0; i < blockPositions.length; i++) {
+		if (objectEvent?.cancelled) {
+			return { ok: false, cancelled: true, broken, fallbackBroken }
+		}
+
 		const position = blockPositions[i]
 		const block = bot?.blockAt ? bot.blockAt(position) : null
 		if (!block || block.name === 'air') continue
-		if (block.name !== targetBlock) continue
+		if (useStrictTarget && block.name !== targetBlock) continue
 
 		const lookTarget = block.position.offset(0.5, 0.5, 0.5)
 		const approachPos = getApproachPosition(block.position, objectEvent)
 		setCameraTarget(lookTarget)
 
 		if (shouldLogBlock(i)) {
-			console.log(`[BOT] Looking at block ${position.x} ${position.y} ${position.z}`)
+			console.log(
+				`[BOT] Looking at block ${position.x} ${position.y} ${position.z}`
+			)
 		}
 
 		await smoothLookAt(bot, lookTarget, {
@@ -139,7 +169,7 @@ async function breakObjectBlockByBlock({ bot, rcon, objectEvent, options = {} })
 		try {
 			bot.swingArm('right')
 		} catch {}
-		await delay(cfg.swingDelayMs)
+		await delay(cfg.swingPauseMs ?? cfg.swingDelayMs)
 
 		try {
 			await smoothLookAt(bot, lookTarget, {
@@ -149,12 +179,21 @@ async function breakObjectBlockByBlock({ bot, rcon, objectEvent, options = {} })
 			await bot.lookAt(lookTarget, true)
 			await digWithTimeout(bot, block, cfg.maxDigTimeMs)
 			broken += 1
+			onProgress?.({ broken, fallbackBroken, block, fallback: false })
 			if (shouldLogBlock(i)) console.log('[BOT] Dig success')
 		} catch (err) {
 			const canFallback = cfg.useDigFallback ?? cfg.fallbackSetBlock
 			if (canFallback) {
+				try {
+					await bot.lookAt(lookTarget, true)
+				} catch {}
+				try {
+					bot.swingArm('right')
+				} catch {}
+				await delay(cfg.swingPauseMs ?? cfg.swingDelayMs)
 				await fallbackClear(commandBus, block.position)
 				fallbackBroken += 1
+				onProgress?.({ broken, fallbackBroken, block, fallback: true })
 				console.log('[BOT] Dig fallback setblock')
 			} else {
 				console.log('[BOT] Dig failed:', err?.message || err)
@@ -173,9 +212,11 @@ async function breakObjectBlockByBlock({ bot, rcon, objectEvent, options = {} })
 		await delay(cfg.breakDelayMs)
 	}
 
-	await reactions.celebrate(bot, cfg.reactionShortMs).catch(err =>
-		console.log('[BOT] Finish reaction failed:', err?.message || err)
-	)
+	await reactions
+		.celebrate(bot, cfg.reactionShortMs)
+		.catch(err =>
+			console.log('[BOT] Finish reaction failed:', err?.message || err)
+		)
 
 	console.log(
 		`[BOT] Finished object ${objectEvent.country} id=${objectEvent.id} broken=${broken} fallback=${fallbackBroken}`

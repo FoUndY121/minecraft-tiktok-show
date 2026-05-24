@@ -16,8 +16,11 @@ const { CameraSync } = require('./camera/cameraSync')
 const { startCameraLock, stopCameraLock } = require('./bot/camera/cameraLock')
 const { applyFastMiningSetup } = require('./bot/setup/applyFastMiningSetup')
 const { LikeTracker } = require('./tiktok/likeTracker')
-const { spawnTntNearBot } = require('./effects/spawnTntNearBot')
+const { spawnTntAboveArena } = require('./effects/spawnTntNearBot')
 const { startKeepDay } = require('./effects/keepDay')
+const { startBreakWatchdog } = require('./core/breakWatchdog')
+const { playFlagMusic } = require('./effects/playFlagMusic')
+const { connectTikTokLive } = require('./tiktok/connectTikTokLive')
 
 function tcpPing({ host, port, timeoutMs = 2500 }) {
 	return new Promise(resolve => {
@@ -56,7 +59,9 @@ function startTerminalTriggers({ handleGift }) {
 		output: process.stdout,
 	})
 
-	console.log('Terminal triggers ready: gg | rose | tiktok | poland | galaxy | big gift')
+	console.log(
+		'Terminal triggers ready: gg | rose | tiktok | poland | galaxy | big gift'
+	)
 	rl.on('line', async line => {
 		const gifts = parseCommandLine(line)
 		for (const gift of gifts) {
@@ -68,7 +73,9 @@ function startTerminalTriggers({ handleGift }) {
 }
 
 function startMinecraftChatTriggers({ bot, handleGift }) {
-	console.log('Minecraft chat triggers: gg | rose | tiktok | poland | galaxy | !gg')
+	console.log(
+		'Minecraft chat triggers: gg | rose | tiktok | poland | galaxy | !gg'
+	)
 
 	bot.on('chat', async (username, message) => {
 		if (!message || username === bot.username) return
@@ -106,7 +113,10 @@ async function clearArena(commandBus) {
 	const y2 = ARENA.origin.y + ARENA.height * 6 + 8
 	const z2 = ARENA.origin.z + ARENA.depth + 2
 
-	await safeRconCommand(commandBus, `/fill ${x1} ${y1} ${z1} ${x2} ${y2} ${z2} minecraft:air`)
+	await safeRconCommand(
+		commandBus,
+		`/fill ${x1} ${y1} ${z1} ${x2} ${y2} ${z2} minecraft:air`
+	)
 }
 
 async function main() {
@@ -166,6 +176,7 @@ async function main() {
 	const commandBus = rcon || bot
 	bot._commandBus = commandBus
 	let stopKeepDay = null
+	let tiktokLive = null
 	const stackManager = new StackManager({
 		baseOrigin: ARENA.origin,
 		objectHeight: ARENA.height,
@@ -176,34 +187,71 @@ async function main() {
 	const likeTracker = new LikeTracker({
 		threshold: 200,
 		onThreshold: data => {
-			spawnTntNearBot({
+			spawnTntAboveArena({
 				bot,
 				rcon: commandBus,
-				fuse: 60,
+				fuse: 70,
 				source: 'likes',
 				label: '200 likes',
+				arena: ARENA,
 			}).catch(err =>
 				console.log('[LIKES] spawn TNT failed:', err?.message || err)
 			)
 		},
 	})
 
-	const breakQueue = new BreakQueue({ bot, rcon: commandBus, options: botBehavior, stackManager, eventRegistry })
-	const spawnQueue = new SpawnQueue({ bot, rcon: commandBus, breakQueue, stackManager, eventRegistry })
+	const breakQueue = new BreakQueue({
+		bot,
+		rcon: commandBus,
+		options: botBehavior,
+		stackManager,
+		eventRegistry,
+	})
+	const spawnQueue = new SpawnQueue({
+		bot,
+		rcon: commandBus,
+		breakQueue,
+		stackManager,
+		eventRegistry,
+	})
 	const cameraSync = new CameraSync({
 		bot,
 		rcon: commandBus,
-		enabled: String(process.env.ENABLE_CAMERA_SYNC || '').toLowerCase() === 'true',
+		enabled:
+			String(process.env.ENABLE_CAMERA_SYNC || '').toLowerCase() === 'true',
 		cameraUsername: process.env.CAMERA_USERNAME,
 		cameraMode: process.env.CAMERA_MODE || 'first_person',
 		intervalMs: process.env.CAMERA_SYNC_INTERVAL_MS
 			? Number(process.env.CAMERA_SYNC_INTERVAL_MS)
 			: botBehavior.cameraSyncIntervalMs,
 	})
+	const watchdog = startBreakWatchdog({
+		bot,
+		arena: {
+			origin: ARENA.origin,
+			maxWidth: ARENA.width,
+			maxDepth: ARENA.depth,
+			maxHeight: ARENA.height,
+			maxStack: 6,
+		},
+		breakQueue,
+		intervalMs: 5000,
+		cooldownMs: 8000,
+		logger: console,
+	})
+
 	const handlers = createGiftHandlers({
 		bot,
 		rcon: commandBus,
 		spawnQueue,
+		breakQueue,
+		arena: {
+			origin: ARENA.origin,
+			maxWidth: ARENA.width,
+			maxDepth: ARENA.depth,
+			maxHeight: ARENA.height,
+			maxStack: 6,
+		},
 	})
 
 	const guardedHandleGift = async ({
@@ -223,6 +271,15 @@ async function main() {
 	startTerminalTriggers({ handleGift: guardedHandleGift })
 	startMinecraftChatTriggers({ bot, handleGift: guardedHandleGift })
 
+	tiktokLive = connectTikTokLive({
+		username: process.env.TIKTOK_USERNAME,
+		handleGift: guardedHandleGift,
+		likeTracker,
+		bot,
+		rcon: commandBus,
+	})
+	tiktokLive.start()
+
 	const app = express()
 	app.use(express.json())
 
@@ -238,6 +295,7 @@ async function main() {
 			breakQueueRunning: breakQueue.isBreaking,
 			stackIndex: stackManager.currentStackIndex,
 			cameraSync: cameraSync.status(),
+			tiktokLive: tiktokLive?.status?.() || null,
 			arena: ARENA,
 			botBehavior,
 		})
@@ -248,7 +306,11 @@ async function main() {
 			const data = req.body || {}
 			const gift = data.gift || data.giftName || data.name
 			const username =
-				data.nickname || data.uniqueId || data.username || data.user || 'Someone'
+				data.nickname ||
+				data.uniqueId ||
+				data.username ||
+				data.user ||
+				'Someone'
 			const giftValue = data.diamondCount || data.giftValue || data.value || 1
 			const result = await guardedHandleGift({
 				giftName: gift,
@@ -259,7 +321,9 @@ async function main() {
 			if (!result.ok) return res.status(400).json(result)
 			return res.json({ ok: true })
 		} catch (err) {
-			return res.status(500).json({ ok: false, error: err?.message || String(err) })
+			return res
+				.status(500)
+				.json({ ok: false, error: err?.message || String(err) })
 		}
 	})
 
@@ -280,7 +344,54 @@ async function main() {
 				threshold: likeTracker.threshold,
 			})
 		} catch (err) {
-			return res.status(500).json({ ok: false, error: err?.message || String(err) })
+			return res
+				.status(500)
+				.json({ ok: false, error: err?.message || String(err) })
+		}
+	})
+
+	app.post('/test-sound', async (req, res) => {
+		try {
+			const data = req.body || {}
+			const sound = String(data.sound || '').trim()
+			if (!sound) {
+				return res.status(400).json({ ok: false, error: 'sound is required' })
+			}
+
+			await safeRconCommand(commandBus, '/stopsound @a master')
+			await safeRconCommand(
+				commandBus,
+				`/playsound ${sound} master @a ~ ~ ~ 10 1`
+			)
+			return res.json({ ok: true, sound })
+		} catch (err) {
+			return res
+				.status(500)
+				.json({ ok: false, error: err?.message || String(err) })
+		}
+	})
+
+	app.post('/test-country-sound', async (req, res) => {
+		try {
+			const data = req.body || {}
+			const country = String(data.country || '').trim().toLowerCase()
+			if (!country) {
+				return res.status(400).json({ ok: false, error: 'country is required' })
+			}
+
+			const played = await playFlagMusic({
+				rcon: commandBus,
+				objectEvent: {
+					country,
+					id: 'test',
+				},
+			})
+
+			return res.json({ ok: true, country, played })
+		} catch (err) {
+			return res
+				.status(500)
+				.json({ ok: false, error: err?.message || String(err) })
 		}
 	})
 
@@ -293,8 +404,12 @@ async function main() {
 		await applyFastMiningSetup({ bot, rcon: commandBus })
 		stopKeepDay = startKeepDay(commandBus)
 		startCameraLock({ bot, rcon: commandBus })
+		watchdog.start()
 		if (cameraSync.enabled && process.env.CAMERA_USERNAME) {
-			await safeRconCommand(commandBus, `/gamemode spectator ${process.env.CAMERA_USERNAME}`)
+			await safeRconCommand(
+				commandBus,
+				`/gamemode spectator ${process.env.CAMERA_USERNAME}`
+			)
 			cameraSync.start()
 		}
 		await clearArena(commandBus)
@@ -307,6 +422,8 @@ async function main() {
 		if (stopKeepDay) stopKeepDay()
 		stopCameraLock()
 		cameraSync.stop()
+		watchdog.stop()
+		tiktokLive?.stop?.()
 		try {
 			if (rcon) await rcon.end()
 		} catch {}

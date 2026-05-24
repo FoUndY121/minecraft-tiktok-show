@@ -11,6 +11,7 @@ const FLAG_BLOCKS = new Set([
 	'gravel',
 	'orange_concrete_powder',
 	'light_blue_concrete_powder',
+	'gray_concrete_powder',
 ])
 
 function getCountryConfig(country) {

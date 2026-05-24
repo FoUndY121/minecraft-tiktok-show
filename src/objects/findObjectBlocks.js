@@ -1,17 +1,22 @@
 const { Vec3 } = require('vec3')
-const { getCountryBlock } = require('./objectBuilder')
+const ARENA = require('../config/arena')
+const { getCountryBlock, FLAG_BLOCKS } = require('./objectBuilder')
+const { scanArenaForFlagBlocks } = require('../core/arenaScanner')
 
-function scanBlocks({ bot, objectEvent, yMin, yMax, targetBlock }) {
+const noBlocksLogged = new Set()
+
+function scanBounds({ bot, origin, width, depth, yMin, yMax, predicate }) {
 	const found = []
-	const origin = objectEvent.origin
+	if (!bot?.blockAt || !origin) return found
 
 	for (let y = yMax; y >= yMin; y--) {
-		for (let z = origin.z; z < origin.z + objectEvent.depth; z++) {
-			for (let x = origin.x; x < origin.x + objectEvent.width; x++) {
-				const position = new Vec3(x, y, z)
-				const block = bot?.blockAt ? bot.blockAt(position) : null
-				if (!block || block.name !== targetBlock) continue
-				found.push(position)
+		for (let z = origin.z; z < origin.z + depth; z++) {
+			for (let x = origin.x; x < origin.x + width; x++) {
+				const pos = new Vec3(x, y, z)
+				const block = bot.blockAt(pos)
+				if (!block || block.name === 'air') continue
+				if (!predicate(block)) continue
+				found.push(pos)
 			}
 		}
 	}
@@ -19,53 +24,107 @@ function scanBlocks({ bot, objectEvent, yMin, yMax, targetBlock }) {
 	return found
 }
 
-async function findObjectBlocks({ bot, objectEvent }) {
-	const targetBlock = getCountryBlock(objectEvent.country)	const FLAG_BLOCKS = new Set([
-	  "sand",
-	  "red_sand",
-	  "white_concrete_powder",
-	  "blue_concrete_powder",
-	  "green_concrete_powder",
-	  "yellow_concrete_powder",
-	  "black_concrete_powder",
-	  "gravel",
-	  "orange_concrete_powder",
-	  "light_blue_concrete_powder"
-	]);
-	
-	async function findObjectBlocks({ bot, arena }) {
-	  const blocks = [];
-	  const { origin, maxWidth, maxDepth, maxHeight, maxStack } = arena;
-	
-	  for (let x = origin.x; x < origin.x + maxWidth; x++) {
-		for (let y = origin.y - 5; y < origin.y + maxStack * maxHeight + 30; y++) {
-		  for (let z = origin.z; z < origin.z + maxDepth; z++) {
-			const block = bot.blockAt({ x, y, z });
-			if (block && FLAG_BLOCKS.has(block.name)) {
-			  blocks.push(block);
-			}
-		  }
-		}
-	  }
-	
-	  return blocks;
-	}
-	
-	module.exports = { findObjectBlocks };
+/**
+ * findObjectBlocks:
+ * - if objectEvent.scanExisting === true -> any FLAG_BLOCKS
+ * - else -> try target block for country
+ * - if target not found -> fallback any FLAG_BLOCKS in object area
+ *
+ * Returns Vec3 positions.
+ */
+async function findObjectBlocks({ bot, objectEvent, arena = null } = {}) {
+	if (!objectEvent) return []
+
+	const scanExisting = objectEvent.scanExisting === true
 	const origin = objectEvent.origin
-	const found = scanBlocks({
+	const width = objectEvent.width ?? ARENA.width
+	const depth = objectEvent.depth ?? ARENA.depth
+	const height = objectEvent.height ?? ARENA.height
+
+	// Extended Y range because gravity blocks can still be settling.
+	const yMin = (origin?.y ?? ARENA.origin.y) - 10
+	const yMax = (origin?.y ?? ARENA.origin.y) + height + 25
+
+	// 1) If we don't have origin (cleanup event), scan whole arena.
+	if (!origin) {
+		if (!scanExisting) return []
+		const arenaCfg = arena || {
+			origin: ARENA.origin,
+			maxWidth: ARENA.width,
+			maxDepth: ARENA.depth,
+			maxHeight: ARENA.height,
+			maxStack: 6,
+		}
+		return await scanArenaForFlagBlocks({ bot, arena: arenaCfg })
+	}
+
+	// 2) Scan inside object area.
+	if (scanExisting) {
+		return scanBounds({
+			bot,
+			origin,
+			width,
+			depth,
+			yMin,
+			yMax,
+			predicate: block => FLAG_BLOCKS.has(block.name),
+		})
+	}
+
+	const targetBlock = getCountryBlock(objectEvent.country)
+	const target = scanBounds({
 		bot,
-		objectEvent,
-		yMin: origin.y - 10,
-		yMax: origin.y + objectEvent.height + 25,
-		targetBlock,
+		origin,
+		width,
+		depth,
+		yMin,
+		yMax,
+		predicate: block => block.name === targetBlock,
 	})
 
-	if (found.length === 0) {
-		console.log(`[BREAK] No blocks found country=${objectEvent.country} targetBlock=${targetBlock}`)
+	if (target.length > 0) {
+		target.fallback = false
+		return target
 	}
 
-	return found
+	// Fallback: if country block is wrong / texture pack mismatch, still clear any flag blocks.
+	const anyFlag = scanBounds({
+		bot,
+		origin,
+		width,
+		depth,
+		yMin,
+		yMax,
+		predicate: block => FLAG_BLOCKS.has(block.name),
+	})
+
+	if (anyFlag.length > 0) {
+		anyFlag.fallback = true
+		return anyFlag
+	}
+
+	const arenaCfg = arena || {
+		origin: ARENA.origin,
+		maxWidth: ARENA.width,
+		maxDepth: ARENA.depth,
+		maxHeight: ARENA.height,
+		maxStack: 6,
+	}
+	const arenaFlags = await scanArenaForFlagBlocks({ bot, arena: arenaCfg })
+	if (arenaFlags.length > 0) {
+		arenaFlags.fallback = true
+		return arenaFlags
+	}
+
+	const logKey = objectEvent.id || `${objectEvent.country}:${targetBlock}`
+	if (!noBlocksLogged.has(logKey)) {
+		noBlocksLogged.add(logKey)
+		console.log(
+			`[BREAK] No blocks found for id=${objectEvent.id} country=${objectEvent.country} targetBlock=${targetBlock}, skipping`
+		)
+	}
+
+	return []
 }
 
 module.exports = {

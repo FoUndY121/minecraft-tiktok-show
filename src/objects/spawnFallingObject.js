@@ -4,8 +4,12 @@ const { safeSend } = require('../rcon')
 const { buildObjectCommands } = require('./objectBuilder')
 const { showDonationTitle } = require('../effects/donationTitle')
 const { showFloatingDonationText } = require('../effects/floatingText')
-const { spawnLightningAroundObject, thunderSounds } = require('../effects/lightning')
+const {
+	spawnLightningAroundObject,
+	thunderSounds,
+} = require('../effects/lightning')
 const { spawnFireworksAroundObject } = require('../effects/fireworks')
+const { playFlagMusic } = require('../effects/playFlagMusic')
 const { setCameraTarget } = require('../bot/camera/cameraLock')
 const behavior = require('../config/botBehavior')
 const { getCountryBlock } = require('./objectBuilder')
@@ -68,6 +72,11 @@ async function spawnFallingObject({ rcon, objectEvent }) {
 	const spawnY = objectEvent.spawnHeight
 
 	setCameraTarget(objectCenter(objectEvent, spawnY))
+
+	console.log(
+		`[SPAWN] calling playFlagMusic country=${objectEvent.country} id=${objectEvent.id}`
+	)
+	await playFlagMusic({ rcon: commandBus, objectEvent })
 
 	await Promise.allSettled([
 		showDonationTitle({ rcon: commandBus, objectEvent }),

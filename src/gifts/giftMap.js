@@ -1,89 +1,40 @@
-const { normalizeGiftName, resolveGift } = require('./resolveGift')
+/**
+ * TikTok gift tier system (STRICT keys).
+ *
+ * Important:
+ * - 1 gift => 1 event
+ * - no includes / partial matching
+ * - keys must match resolveGift(normalizeGiftName(raw)) EXACTLY
+ */
 
 const GIFT_MAP = {
-	germany: {
-		type: 'object',
-		country: 'germany',
-		giftName: 'GG',
-		giftValue: 1,
-	},
-	ukraine: {
-		type: 'object',
-		country: 'ukraine',
-		giftName: 'Rose',
-		giftValue: 1,
-	},
-	france: {
-		type: 'object',
-		country: 'france',
-		giftName: 'TikTok',
-		giftValue: 1,
-	},
-	poland: {
-		type: 'object',
-		country: 'poland',
-		giftName: 'Poland',
-		giftValue: 1,
-	},
-	italy: {
-		type: 'object',
-		country: 'italy',
-		giftName: 'Italy',
-		giftValue: 1,
-	},
-	spain: {
-		type: 'object',
-		country: 'spain',
-		giftName: 'Spain',
-		giftValue: 1,
-	},
-	lithuania: {
-		type: 'object',
-		country: 'lithuania',
-		giftName: 'Lithuania',
-		giftValue: 1,
-	},
-	usa: {
-		type: 'object',
-		country: 'usa',
-		giftName: 'USA',
-		giftValue: 1,
-	},
-	austria: {
-		type: 'object',
-		country: 'austria',
-		giftName: 'Austria',
-		giftValue: 1,
-	},
-	argentina: {
-		type: 'object',
-		country: 'argentina',
-		giftName: 'Argentina',
-		giftValue: 1,
-	},
-	tnt: {
-		type: 'tnt',
-		giftName: 'Galaxy',
-		giftValue: 20,
-		fuse: 60,
-	},
-	bigGift: {
-		type: 'tnt',
-		giftName: 'Big Gift',
-		giftValue: 100,
-		fuse: 100,
-	},
-}
+	// Cheap gifts -> small 4x4x4
+	rose: { country: 'ukraine', size: 'small' },
+	gg: { country: 'germany', size: 'small' },
+	perfume: { country: 'russia', size: 'small' },
+	'finger heart': { country: 'france', size: 'small' },
+	'heart me': { country: 'spain', size: 'small' },
+	tiktok: { country: 'france', size: 'small' },
+	poland: { country: 'poland', size: 'small' },
+	lithuania: { country: 'lithuania', size: 'small' },
 
-function getGiftDefinition(name) {
-	const key = resolveGift(name)
-	if (!key || !GIFT_MAP[key]) return null
-	return { key, ...GIFT_MAP[key] }
+	// Medium gifts -> 5x5x5
+	cap: { country: 'germany', size: 'medium' },
+	'hand heart': { country: 'ukraine', size: 'medium' },
+	'love you': { country: 'poland', size: 'medium' },
+	sunglasses: { country: 'italy', size: 'medium' },
+	donut: { country: 'russia', size: 'medium' },
+
+	// Expensive gifts -> large 7x7x7 (+ instant effects)
+	galaxy: { country: 'usa', size: 'large', effects: ['tnt_chaos'] },
+	lion: { country: 'germany', size: 'large', effects: ['lightning'] },
+	universe: { country: 'ukraine', size: 'large', effects: ['fireworks'] },
+	rocket: { country: 'usa', size: 'large', effects: ['tnt_chaos'] },
+	castle: { country: 'france', size: 'large' },
+	'money gun': { country: 'russia', size: 'large', effects: ['tnt_chaos'] },
+	'drama queen': { country: 'russia', size: 'large', effects: ['lightning'] },
 }
 
 module.exports = {
 	GIFT_MAP,
-	normalizeGiftName,
-	resolveGift,
-	getGiftDefinition,
 }

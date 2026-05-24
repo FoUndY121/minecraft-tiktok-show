@@ -1,0 +1,13 @@
+{
+	"flags.ukraine": { "sounds": ["flags/ukraine"] },
+	"flags.germany": { "sounds": ["flags/germany"] },
+	"flags.poland": { "sounds": ["flags/poland"] },
+	"flags.france": { "sounds": ["flags/france"] },
+	"flags.italy": { "sounds": ["flags/italy"] },
+	"flags.spain": { "sounds": ["flags/spain"] },
+	"flags.lithuania": { "sounds": ["flags/lithuania"] },
+	"flags.usa": { "sounds": ["flags/usa"] },
+	"flags.austria": { "sounds": ["flags/austria"] },
+	"flags.argentina": { "sounds": ["flags/argentina"] },
+	"flags.russia": { "sounds": ["flags/russia"] }
+}

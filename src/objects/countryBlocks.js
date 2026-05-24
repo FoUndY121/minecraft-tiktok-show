@@ -39,6 +39,10 @@ module.exports = {
 		displayName: 'Argentina',
 		block: 'light_blue_concrete_powder',
 	},
+	russia: {
+		displayName: 'Russia',
+		block: 'gray_concrete_powder',
+	},
 	default: {
 		displayName: 'Ukraine',
 		block: 'sand',

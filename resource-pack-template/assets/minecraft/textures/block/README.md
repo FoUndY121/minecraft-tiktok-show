@@ -10,3 +10,4 @@ Replace these vanilla block textures:
 - gravel.png = USA
 - orange_concrete_powder.png = Austria
 - light_blue_concrete_powder.png = Argentina
+- gray_concrete_powder.png = Russia flag block

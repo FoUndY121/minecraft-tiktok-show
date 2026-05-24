@@ -1,35 +1,53 @@
 module.exports = {
-	flightSpeed: 6.04,
-	flightIntervalMs: 30,
-	stopDistance: 1.6,
+	// --- Main fast break switch ---
+	fastBreakMode: true,
 
+	// --- Movement (fallback/legacy breakers) ---
+	flightSpeed: 7.2,
+	flightIntervalMs: 25,
+	stopDistance: 1.4,
+
+	// --- Camera ---
 	cameraLockEnabled: true,
-	cameraLockIntervalMs: 40,
+	cameraLockIntervalMs: 25,
 	cameraSyncIntervalMs: 60,
 	gravitySettleDelayMs: 1800,
 
 	lookAtFlagDurationMs: 250,
-	lookAtBlockDurationMs: 70,
-	finalLookDurationMs: 50,
-	teleportStepSize: 0.5,
-	teleportStepIntervalMs: 20,
-	preBreakPauseMs: 20,
-	breakDelayMs: 15,
-	afterBreakPauseMs: 10,
-	lookDelayMs: 120,
-	swingDelayMs: 20,
+	lookAtBlockDurationMs: 90,
+	finalLookDurationMs: 70,
 
-	reactionShortMs: 500,
-	reactionLongMs: 1200,
+	// --- Teleport smoothing (RCON) ---
+	teleportStepSize: 0.45,
+	teleportStepIntervalMs: 25,
 
-	cameraMicroShake: true,
-	cameraShakeIntensity: 0.06,
-	cameraShakeIntervalMs: 45,
+	// --- Breaking micro timings (fast, "LMB held" look) ---
+	preBreakPauseMs: 40,
+	swingPauseMs: 60,
+	breakDelayMs: 45,
+	afterBreakPauseMs: 35,
+	lookDelayMs: 70,
+	swingDelayMs: 60,
 
-	maxDigTimeMs: 250,
+	// --- Fast breaker bursts ---
+	blocksPerBurst: 5,
+	burstPauseMs: 25,
+
+	// --- Dig settings ---
+	maxDigTimeMs: 350,
 	useDigFallback: true,
 	fallbackSetBlock: true,
 
+	// --- Reactions ---
+	reactionShortMs: 500,
+	reactionLongMs: 1200,
+
+	// --- Optional camera shake (keep but tuned down for speed) ---
+	cameraMicroShake: true,
+	cameraShakeIntensity: 0.055,
+	cameraShakeIntervalMs: 45,
+
+	// --- Effects tuning ---
 	fireworksPerSpawn: {
 		min: 2,
 		max: 4,

@@ -8,6 +8,7 @@ function startKeepDay(commandBus, intervalMs = 60000) {
 		await safeSend(commandBus, '/time set day')
 		await safeSend(commandBus, '/weather clear')
 		await safeSend(commandBus, '/gamerule doDaylightCycle false')
+		await safeSend(commandBus, '/gamerule mobGriefing false')
 	}
 
 	apply().catch(err => console.log('[KEEP_DAY] failed:', err?.message || err))

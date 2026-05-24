@@ -1,3 +1,5 @@
+const { GIFT_MAP } = require('./giftMap')
+
 function normalizeGiftName(rawGiftName) {
 	return String(rawGiftName || '')
 		.toLowerCase()
@@ -6,28 +8,19 @@ function normalizeGiftName(rawGiftName) {
 		.trim()
 }
 
+/**
+ * Strict resolver:
+ * - normalize -> lookup -> return gift definition
+ * - no includes / partial matching
+ */
 function resolveGift(rawGiftName) {
-	const normalized = normalizeGiftName(rawGiftName)
-	const map = {
-		gg: 'germany',
-		germany: 'germany',
-		rose: 'ukraine',
-		ukraine: 'ukraine',
-		tiktok: 'france',
-		france: 'france',
-		poland: 'poland',
-		italy: 'italy',
-		spain: 'spain',
-		lithuania: 'lithuania',
-		usa: 'usa',
-		austria: 'austria',
-		argentina: 'argentina',
-		galaxy: 'tnt',
-		tnt: 'tnt',
-		'big gift': 'bigGift',
-	}
+	const key = normalizeGiftName(rawGiftName)
+	if (!key) return null
 
-	return map[normalized] || null
+	const def = GIFT_MAP[key]
+	if (!def) return null
+
+	return { key, ...def }
 }
 
 module.exports = {

@@ -5,14 +5,17 @@ const { teleportLookingAt } = require('../bot/movement/teleportLookingAt')
 const botBehavior = require('../config/botBehavior')
 
 const BREAKABLE_FLAG_BLOCKS = new Set([
-	'black_wool',
-	'blue_wool',
-	'gold_block',
-	'green_wool',
-	'sea_lantern',
-	'red_wool',
-	'white_wool',
-	'yellow_wool',
+	'sand',
+	'red_sand',
+	'white_concrete_powder',
+	'blue_concrete_powder',
+	'green_concrete_powder',
+	'yellow_concrete_powder',
+	'black_concrete_powder',
+	'gravel',
+	'orange_concrete_powder',
+	'light_blue_concrete_powder',
+	'gray_concrete_powder',
 ])
 
 function sleep(ms) {
