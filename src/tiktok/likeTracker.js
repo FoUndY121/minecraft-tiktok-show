@@ -16,7 +16,9 @@ class LikeTracker {
 		while (this.likeBuffer >= this.threshold) {
 			this.likeBuffer -= this.threshold
 			triggered += 1
-			console.log('[LIKES] threshold reached, spawning TNT')
+			console.log(
+				`[LIKES] threshold reached ${this.threshold}, spawning falling TNT above flag`
+			)
 
 			try {
 				Promise.resolve(this.onThreshold?.(data)).catch(err =>

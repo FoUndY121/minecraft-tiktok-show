@@ -3,20 +3,7 @@ const { safeRconCommand } = require('../rcon')
 const { breakFlagHumanLike: breakFlagHumanLikeAction } = require('./breakFlagHumanLike')
 const { teleportLookingAt } = require('../bot/movement/teleportLookingAt')
 const botBehavior = require('../config/botBehavior')
-
-const BREAKABLE_FLAG_BLOCKS = new Set([
-	'sand',
-	'red_sand',
-	'white_concrete_powder',
-	'blue_concrete_powder',
-	'green_concrete_powder',
-	'yellow_concrete_powder',
-	'black_concrete_powder',
-	'gravel',
-	'orange_concrete_powder',
-	'light_blue_concrete_powder',
-	'gray_concrete_powder',
-])
+const { FLAG_BLOCKS: BREAKABLE_FLAG_BLOCKS } = require('../config/flagBlocks')
 
 function sleep(ms) {
 	return new Promise(r => setTimeout(r, ms))
@@ -694,7 +681,11 @@ async function breakFlag(bot, origin, width, height, opts = {}) {
 		const z = origin.z
 		const x2 = origin.x + width - 1
 		const y2 = origin.y + height - 1
-		bot.chat(`/fill ${x1} ${y1} ${z} ${x2} ${y2} ${z} minecraft:air`)
+		for (const block of BREAKABLE_FLAG_BLOCKS) {
+			bot.chat(
+				`/fill ${x1} ${y1} ${z} ${x2} ${y2} ${z} minecraft:air replace minecraft:${block}`
+			)
+		}
 	}
 
 	console.log('✅ Bot finished breaking flag')

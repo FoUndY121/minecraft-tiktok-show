@@ -1,24 +1,20 @@
-const ARENA = require('../config/arena')
 const behavior = require('../config/botBehavior')
 const reactions = require('../bot/reactions')
 const { EventRegistry } = require('./eventRegistry')
-const {
-	breakObjectBlockByBlock,
-} = require('../botActions/breakObjectBlockByBlock')
-const {
-	fastBreakVisibleFlagBlocks,
-} = require('../botActions/fastBreakVisibleFlagBlocks')
-const { findObjectBlocks } = require('../objects/findObjectBlocks')
-const { scanArenaForFlagBlocks } = require('./arenaScanner')
+const { stableBreakArena } = require('../botActions/stableBreakArena')
 
-function arenaForScan() {
-	return {
-		origin: ARENA.origin,
-		maxWidth: ARENA.width,
-		maxDepth: ARENA.depth,
-		maxHeight: ARENA.height,
-		maxStack: 6,
-	}
+function withTimeout(promise, timeoutMs, onTimeout) {
+	let timer = null
+	const timeout = new Promise(resolve => {
+		timer = setTimeout(() => {
+			onTimeout?.()
+			resolve({ timedOut: true })
+		}, timeoutMs)
+	})
+
+	return Promise.race([promise, timeout]).finally(() => {
+		if (timer) clearTimeout(timer)
+	})
 }
 
 class BreakQueue {
@@ -52,17 +48,19 @@ class BreakQueue {
 			} size=${objectEvent.size || 'default'} queue=${this.queue.length}`
 		)
 
-		// Always attempt to start immediately (fix "first event waits for second").
+		this.ensureProcessing()
+	}
+
+	ensureProcessing() {
+		if (this.isBreaking || this.queue.length === 0) return false
+
+		console.log('[BREAK_QUEUE] wake processNext isBreaking=false')
 		this.processNext().catch(err => {
 			this.isBreaking = false
 			console.log('[BREAK_QUEUE] process error:', err?.message || err)
-			this.processNext().catch(nextErr =>
-				console.log(
-					'[BREAK_QUEUE] recovery failed:',
-					nextErr?.message || nextErr
-				)
-			)
+			this.ensureProcessing()
 		})
+		return true
 	}
 
 	async noticeFallingObject(objectEvent) {
@@ -86,11 +84,7 @@ class BreakQueue {
 		const objectEvent = this.queue.shift()
 		if (!objectEvent) return
 		if (this.completedEventIds.has(objectEvent.id)) {
-			setImmediate(() =>
-				this.processNext().catch(err =>
-					console.log('[BREAK_QUEUE] next error:', err?.message || err)
-				)
-			)
+			setImmediate(() => this.ensureProcessing())
 			return
 		}
 
@@ -110,66 +104,40 @@ class BreakQueue {
 			`[BREAK_QUEUE] start id=${objectEvent.id} country=${objectEvent.country} attempt=${objectEvent.attempts}`
 		)
 
+		let result = null
+		const maxBreakEventMs = this.options.maxBreakEventMs ?? 90000
 		try {
 			if (objectEvent.attempts > 2) {
 				this.skippedEvents.add(objectEvent.id)
-				this.completedEventIds.add(objectEvent.id)
 				console.log(
 					`[BREAK_QUEUE] skip retry-limit id=${objectEvent.id} country=${objectEvent.country}`
 				)
 				return
 			}
 
-			let foundPositions = []
-			try {
-				foundPositions = await findObjectBlocks({
-					bot: this.bot,
-					objectEvent,
-					arena: arenaForScan(),
-				})
-			} catch {}
-
-			if (!foundPositions.length) {
-				try {
-					foundPositions = await scanArenaForFlagBlocks({
-						bot: this.bot,
-						arena: arenaForScan(),
-					})
-				} catch {}
-			}
-
-			if (!foundPositions.length) {
-				this.skippedEvents.add(objectEvent.id)
-				this.completedEventIds.add(objectEvent.id)
-				console.log(
-					`[BREAK_QUEUE] skip id=${objectEvent.id} country=${objectEvent.country} attempts=${objectEvent.attempts}`
-				)
-				return
-			}
-
-			if (this.breakState?.currentEventId === objectEvent.id) {
-				this.breakState.totalBlocks = foundPositions.length
-			}
-
-			console.log(
-				`[BREAK_QUEUE] found ${foundPositions.length} blocks id=${objectEvent.id}`
-			)
-
 			const onProgress = () => this.markProgress(objectEvent.id)
-			const result = this.options.fastBreakMode
-				? await fastBreakVisibleFlagBlocks({
-						bot: this.bot,
-						rcon: this.rcon,
-						objectEvent,
-						onProgress,
-				  })
-				: await breakObjectBlockByBlock({
-						bot: this.bot,
-						rcon: this.rcon,
-						objectEvent,
-						options: this.options,
-						onProgress,
-				  })
+			const breakPromise = stableBreakArena({
+				bot: this.bot,
+				rcon: this.rcon,
+				objectEvent,
+				options: this.options,
+				onProgress,
+			})
+			result = await withTimeout(breakPromise, maxBreakEventMs, () => {
+				objectEvent.cancelled = true
+				console.log('[BREAK_QUEUE] event timeout, finishing safely')
+			})
+			if (result?.timedOut) {
+				result = {
+					broken: this.breakState?.brokenCount || 0,
+					fallbackBroken: this.breakState?.brokenCount || 0,
+					skippedAir: 0,
+					leftovers: 0,
+					passes: 0,
+					rescans: 0,
+					stopReason: 'break_queue_timeout',
+				}
+			}
 
 			if (objectEvent.cancelled || this.completedEventIds.has(objectEvent.id)) {
 				console.log(
@@ -179,34 +147,38 @@ class BreakQueue {
 			}
 
 			console.log(
-				`[BREAK_QUEUE] finish id=${objectEvent.id} broken=${
-					result?.broken ?? 'n/a'
-				} fallback=${result?.fallbackBroken ?? 'n/a'}`
+				`[BREAK] finish id=${objectEvent.id} broken=${
+					result?.broken ?? 0
+				} fallback=${result?.fallbackBroken ?? 0} skippedAir=${
+					result?.skippedAir ?? 0
+				} leftovers=${result?.leftovers ?? 0} passes=${
+					result?.passes ?? 0
+				} rescans=${result?.rescans ?? 0}`
 			)
 			this.stackManager?.markObjectDestroyed?.(objectEvent)
-			this.completedEventIds.add(objectEvent.id)
 		} catch (err) {
-			console.log(
+			console.error(
 				`[BREAK_QUEUE] error id=${objectEvent.id} country=${objectEvent.country}:`,
 				err?.message || err
 			)
 			if (objectEvent.attempts >= 2) {
 				this.skippedEvents.add(objectEvent.id)
-				this.completedEventIds.add(objectEvent.id)
 			}
 		} finally {
+			this.completedEventIds.add(objectEvent.id)
 			this.eventRegistry.remove(objectEvent.id)
-			if (this.currentEvent?.id === objectEvent.id) {
-				this.isBreaking = false
+			console.log(
+				`[BREAK_QUEUE] finally finish id=${objectEvent.id} broken=${
+					result?.broken ?? 0
+				} fallback=${result?.fallbackBroken ?? 0}`
+			)
+			if (!this.currentEvent || this.currentEvent.id === objectEvent.id) {
 				this.currentEvent = null
-				this.currentEventStartedAt = 0
-				this.breakState = null
-				setImmediate(() =>
-					this.processNext().catch(err =>
-						console.log('[BREAK_QUEUE] next error:', err?.message || err)
-					)
-				)
 			}
+			this.isBreaking = false
+			this.currentEventStartedAt = 0
+			this.breakState = null
+			setImmediate(() => this.ensureProcessing())
 		}
 	}
 
@@ -233,11 +205,7 @@ class BreakQueue {
 		console.log(
 			`[BREAK_QUEUE] force finish id=${objectEvent.id} country=${objectEvent.country} reason=${reason}`
 		)
-		setImmediate(() =>
-			this.processNext().catch(err =>
-				console.log('[BREAK_QUEUE] watchdog next error:', err?.message || err)
-			)
-		)
+		setImmediate(() => this.ensureProcessing())
 		return true
 	}
 

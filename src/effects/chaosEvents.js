@@ -4,6 +4,9 @@ const { safeSend } = require('../rcon')
 const { lightningBurst } = require('./lightning')
 const { fireworksBurst } = require('./fireworks')
 const { spawnTntNearBot } = require('./spawnTntNearBot')
+const {
+	removeOnlyFlagBlocksInRadius,
+} = require('./removeOnlyFlagBlocksInRadius')
 
 function delay(ms) {
 	return new Promise(resolve => setTimeout(resolve, ms))
@@ -43,12 +46,58 @@ async function spawnMobNearArena({ rcon, objectEvent, mob = 'creeper' } = {}) {
 
 async function tntRain({ bot, rcon, objectEvent, count = 3 } = {}) {
 	const c = arenaCenter(objectEvent)
+	const commandBus = rcon || bot
+	if (!commandBus) return
 
 	for (let i = 0; i < count; i++) {
 		const x = c.x + randInt(-5, 5)
 		const y = c.y + randInt(9, 15)
 		const z = c.z + randInt(-5, 5)
-		await safeSend(rcon, `/summon tnt ${x} ${y} ${z} {Fuse:${randInt(35, 70)}}`)
+		const targetY = ARENA.groundY + 2
+		const fuse = Math.min(randInt(35, 70), 40)
+		const tag = `TikTokShowChaosTnt${Date.now()}${i}`
+
+		await safeSend(
+			commandBus,
+			`/summon minecraft:tnt ${x} ${y} ${z} {Fuse:${fuse},Tags:["${tag}"]}`
+		)
+		setTimeout(() => {
+			Promise.resolve()
+				.then(() =>
+					safeSend(
+						commandBus,
+						`/kill @e[type=minecraft:tnt,tag=${tag}]`
+					)
+				)
+				.then(() =>
+					removeOnlyFlagBlocksInRadius({
+						bot,
+						rcon: commandBus,
+						center: {
+						x,
+						y: targetY,
+						z,
+						},
+						radius: behavior.tntFlagRadius ?? 2.5,
+						maxBlocks: behavior.tntMaxBlocksToRemove ?? 18,
+					})
+				)
+				.then(() =>
+					safeSend(
+						commandBus,
+						`/particle minecraft:explosion ${x} ${targetY} ${z} 1.0 1.0 1.0 0.08 20 force`
+					)
+				)
+				.then(() =>
+					safeSend(
+						commandBus,
+						`/playsound minecraft:entity.generic.explode master @a ${x} ${targetY} ${z} 0.9 1.05`
+					)
+				)
+				.catch(err =>
+					console.log('[CHAOS] TNT rain cleanup failed:', err?.message || err)
+				)
+		}, Math.max(250, fuse * 50 - 100))
 		await delay(randInt(120, 240))
 	}
 
@@ -75,7 +124,7 @@ async function randomChaos({ bot, rcon, objectEvent, giftValue = 1, forced = fal
 	const roll = randInt(0, 6)
 
 	try {
-		if (roll === 0) await lightningBurst({ rcon, objectEvent, min: 5, max: 8, radius: 8 })
+		if (roll === 0) await lightningBurst({ bot, rcon, objectEvent, min: 2, max: 4, radius: 8 })
 		else if (roll === 1) await fireworksBurst({ rcon, objectEvent, min: 6, max: 10 })
 		else if (roll === 2) await spawnMobNearArena({ rcon, objectEvent, mob: 'creeper' })
 		else if (roll === 3) await spawnMobNearArena({ rcon, objectEvent, mob: 'zombie' })

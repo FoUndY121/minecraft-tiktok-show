@@ -7,9 +7,9 @@ function randomOffset(intensity) {
 }
 
 async function smoothLookAt(bot, targetVec, options = {}) {
-	const durationMs = options.durationMs ?? 160
-	const steps = Math.max(4, Math.min(6, options.steps || Math.round(durationMs / 30)))
-	const stepDelay = Math.max(15, Math.floor(durationMs / steps))
+	const durationMs = options.durationMs ?? 140
+	const steps = Math.max(1, Math.min(12, options.steps ?? 6))
+	const stepDelay = Math.max(1, Math.floor(durationMs / steps))
 	const jitter = options.jitter || 0
 
 	if (!bot?.lookAt || !targetVec) return

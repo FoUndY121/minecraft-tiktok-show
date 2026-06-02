@@ -93,7 +93,7 @@ async function spawnFallingObject({ rcon, objectEvent }) {
 		console.log('[FALLING_OBJECT] particles failed:', err?.message || err)
 	)
 
-	await delay(behavior.gravitySettleDelayMs || 1800)
+	await delay(behavior.gravitySettleBeforeBreakMs || 1800)
 	setCameraTarget(objectCenter(objectEvent, targetY))
 
 	await safeCommand(

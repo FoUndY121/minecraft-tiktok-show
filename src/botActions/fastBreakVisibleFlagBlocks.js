@@ -4,29 +4,45 @@ const behavior = require('../config/botBehavior')
 const { safeSend } = require('../rcon')
 const { setCameraTarget } = require('../bot/camera/cameraLock')
 const { smoothLookAt } = require('../bot/camera/smoothLookAt')
-const { teleportLookingAt } = require('../bot/movement/teleportLookingAt')
+const { cinematicFlyTo } = require('../bot/movement/cinematicFlyTo')
+const {
+	createOutsideRoute,
+	SIDE_ORDER,
+} = require('../bot/movement/createOutsideRoute')
+const { getOutsideBreakPositions } = require('../bot/movement/getOutsideBreakPositions')
+const { calculateBounds } = require('../bot/movement/calculateBounds')
 const { applyFastMiningSetup } = require('../bot/setup/applyFastMiningSetup')
-const { FLAG_BLOCKS, getCountryBlock } = require('../objects/objectBuilder')
+const { FLAG_BLOCKS } = require('../config/flagBlocks')
 const { findObjectBlocks } = require('../objects/findObjectBlocks')
-const { scanArenaForFlagBlocks } = require('../core/arenaScanner')
 
 function sleep(ms) {
 	return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function randInt(min, max) {
-	return min + Math.floor(Math.random() * (max - min + 1))
 }
 
 function vecCenter(pos) {
 	return new Vec3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5)
 }
 
-function dist2(a, b) {
-	const dx = a.x - b.x
-	const dy = a.y - b.y
-	const dz = a.z - b.z
-	return dx * dx + dy * dy + dz * dz
+function boundsCenter(bounds) {
+	return new Vec3(bounds.centerX, bounds.centerY, bounds.centerZ)
+}
+
+function isLiveFlagBlock(block) {
+	return block && block.name !== 'air' && FLAG_BLOCKS.has(block.name)
+}
+
+function normalizeArenaForScan() {
+	return {
+		origin: ARENA.origin,
+		maxWidth: ARENA.width,
+		maxDepth: ARENA.depth,
+		maxHeight: ARENA.height,
+		maxStack: 6,
+	}
+}
+
+function formatPos(pos) {
+	return `${pos.x.toFixed(2)} ${pos.y.toFixed(2)} ${pos.z.toFixed(2)}`
 }
 
 function withTimeout(promise, timeoutMs, label = 'timeout') {
@@ -41,140 +57,179 @@ function withTimeout(promise, timeoutMs, label = 'timeout') {
 	})
 }
 
-async function digBlockFast({ bot, rcon, block, cfg }) {
-	const lookTarget = vecCenter(block.position)
-
-	// Visual: lock camera before dig.
-	if (cfg.cameraLockEnabled) setCameraTarget(lookTarget)
+function canSeeBlock(bot, block) {
+	if (!block) return false
+	if (typeof bot.canSeeBlock !== 'function') return true
 	try {
-		await bot.lookAt(lookTarget, true)
-	} catch {}
+		return bot.canSeeBlock(block)
+	} catch {
+		return true
+	}
+}
 
-	try {
-		bot.swingArm('right')
-	} catch {}
+async function digWithFallback({ bot, rcon, liveBlock, cfg }) {
+	const position = liveBlock.position
 
-	if (cfg.swingPauseMs > 0) await sleep(cfg.swingPauseMs)
+	const beforeDig = bot.blockAt(position)
+	if (!isLiveFlagBlock(beforeDig)) return { ok: false, skippedAir: true }
 
 	try {
 		await withTimeout(
-			bot.dig(block, true),
+			bot.dig(beforeDig, true),
 			cfg.maxDigTimeMs,
 			`dig timeout ${cfg.maxDigTimeMs}ms`
 		)
 		return { ok: true, fallback: false }
-	} catch (_err) {
-		if (!cfg.useDigFallback) return { ok: false, fallback: false }
-		if (!rcon) return { ok: false, fallback: false }
+	} catch {}
 
-		try {
-			await bot.lookAt(lookTarget, true)
-		} catch {}
+	if (!cfg.useDigFallback || !rcon) return { ok: false, fallback: false }
+
+	const beforeFallback = bot.blockAt(position)
+	if (!isLiveFlagBlock(beforeFallback)) return { ok: false, skippedAir: true }
+
+	await safeSend(
+		rcon,
+		`/setblock ${position.x} ${position.y} ${position.z} minecraft:air`
+	)
+	return { ok: true, fallback: true }
+}
+
+function orderedOutsidePositions(outsidePositions) {
+	return [...outsidePositions].sort((a, b) => {
+		if (a.position.y !== b.position.y) return a.position.y - b.position.y
+		return SIDE_ORDER.indexOf(a.side) - SIDE_ORDER.indexOf(b.side)
+	})
+}
+
+function sameLayerOutsidePositions(outsidePositions, y) {
+	return outsidePositions.filter(item => Math.abs(item.position.y - y) < 0.01)
+}
+
+async function breakReachableFromSide({
+	bot,
+	rcon,
+	side,
+	cfg,
+	onProgress,
+	state,
+}) {
+	const freshPositions = await state.loadPositions()
+	state.rescans += 1
+	const reachable = []
+	const maxReachDistance = cfg.maxReachDistance ?? 4.2
+
+	for (const blockPosition of freshPositions) {
+		const liveBlock = bot.blockAt(blockPosition)
+		if (!isLiveFlagBlock(liveBlock)) continue
+
+		const blockCenter = vecCenter(liveBlock.position)
+		const distance = bot.entity.position.distanceTo(blockCenter)
+		if (distance > maxReachDistance) continue
+		if (!canSeeBlock(bot, liveBlock)) continue
+
+		reachable.push({
+			position: liveBlock.position,
+			distance,
+		})
+	}
+
+	reachable.sort((a, b) => a.distance - b.distance)
+
+	let sideBroken = 0
+	const limit = Math.max(1, cfg.blocksPerBurst ?? 2)
+
+	for (const target of reachable) {
+		if (state.objectEvent?.cancelled) {
+			state.stopReason = 'cancelled'
+			break
+		}
+		if (state.timedOut()) break
+		if (sideBroken >= limit) break
+		if (state.passBroken >= state.maxBlocksPerPass) break
+
+		const liveBlock = bot.blockAt(target.position)
+		if (!isLiveFlagBlock(liveBlock)) {
+			state.skippedAir += 1
+			continue
+		}
+
+		const blockCenter = vecCenter(liveBlock.position)
+		const distance = bot.entity.position.distanceTo(blockCenter)
+		if (distance > maxReachDistance) continue
+		if (!canSeeBlock(bot, liveBlock)) continue
+
+		if (cfg.cameraLockEnabled) setCameraTarget(blockCenter)
+		await smoothLookAt(bot, blockCenter, {
+			durationMs: cfg.lookAtBlockDurationMs,
+			jitter: 0,
+		})
+		if (cfg.preBreakPauseMs > 0) await sleep(cfg.preBreakPauseMs)
+
+		const beforeSwing = bot.blockAt(liveBlock.position)
+		if (!isLiveFlagBlock(beforeSwing)) {
+			state.skippedAir += 1
+			continue
+		}
+
+		const distanceBeforeSwing = bot.entity.position.distanceTo(blockCenter)
+		if (distanceBeforeSwing > maxReachDistance) continue
+
 		try {
 			bot.swingArm('right')
 		} catch {}
 		if (cfg.swingPauseMs > 0) await sleep(cfg.swingPauseMs)
 
+		const result = await digWithFallback({
+			bot,
+			rcon,
+			liveBlock,
+			cfg,
+		})
+
+		if (cfg.afterBreakPauseMs > 0) await sleep(cfg.afterBreakPauseMs)
+
+		if (result.skippedAir) {
+			state.skippedAir += 1
+			continue
+		}
+		if (!result.ok) continue
+
+		state.broken += 1
+		state.passBroken += 1
+		sideBroken += 1
+		state.lastProgressAt = Date.now()
+		if (result.fallback) state.fallbackBroken += 1
+		onProgress?.({
+			broken: state.broken,
+			fallbackBroken: state.fallbackBroken,
+			block: liveBlock,
+			fallback: result.fallback,
+		})
+
+		if (cfg.breakDelayMs > 0) await sleep(cfg.breakDelayMs)
+	}
+
+	console.log(`[BREAK] side=${side} reachable=${reachable.length} broken=${sideBroken}`)
+	if (cfg.burstPauseMs > 0 && sideBroken > 0) await sleep(cfg.burstPauseMs)
+}
+
+async function fallbackCleanup({ bot, rcon, positions }) {
+	let cleaned = 0
+	if (!rcon) return cleaned
+
+	for (const position of positions) {
+		const liveBlock = bot.blockAt(position)
+		if (!isLiveFlagBlock(liveBlock)) continue
 		await safeSend(
 			rcon,
-			`/setblock ${block.position.x} ${block.position.y} ${block.position.z} minecraft:air`
+			`/setblock ${liveBlock.position.x} ${liveBlock.position.y} ${liveBlock.position.z} minecraft:air`
 		)
-		return { ok: true, fallback: true }
-	}
-}
-
-function pickViewPosition(_bot, centerBlockPos, objectEvent) {
-	const center = vecCenter(centerBlockPos)
-	const origin = objectEvent?.origin || centerBlockPos
-	return new Vec3(center.x, center.y + 0.35, origin.z - 2.2)
-}
-
-async function teleportInSteps({
-	bot,
-	rcon,
-	botName,
-	targetPos,
-	lookTarget,
-	cfg,
-}) {
-	if (!rcon || !botName || !bot?.entity?.position) return false
-
-	const from = bot.entity.position
-	const to = new Vec3(targetPos.x, targetPos.y, targetPos.z)
-	const distance = from.distanceTo(to)
-	const step = Math.max(0.15, cfg.teleportStepSize || 0.75)
-	const steps = Math.max(1, Math.ceil(distance / step))
-
-	for (let i = 1; i <= steps; i++) {
-		const t = i / steps
-		const pos = new Vec3(
-			from.x + (to.x - from.x) * t,
-			from.y + (to.y - from.y) * t,
-			from.z + (to.z - from.z) * t
-		)
-
-		await teleportLookingAt({
-			rcon,
-			botName,
-			position: pos,
-			lookTarget,
-		})
-		await sleep(cfg.teleportStepIntervalMs || 12)
+		cleaned += 1
 	}
 
-	return true
+	return cleaned
 }
 
-function groupBlocks(blocks, { min = 3, max = 6 } = {}) {
-	const groups = []
-	let i = 0
-	while (i < blocks.length) {
-		const size = randInt(min, max)
-		groups.push(blocks.slice(i, i + size))
-		i += size
-	}
-	return groups
-}
-
-function normalizeArenaForScan() {
-	return {
-		origin: ARENA.origin,
-		maxWidth: ARENA.width,
-		maxDepth: ARENA.depth,
-		maxHeight: ARENA.height,
-		maxStack: 6,
-	}
-}
-
-async function resolvePositionsToBlocks(bot, positions) {
-	const blocks = []
-	for (const pos of positions) {
-		const b = bot.blockAt(pos)
-		if (!b) continue
-		if (b.name === 'air') continue
-		if (!FLAG_BLOCKS.has(b.name)) continue
-		blocks.push(b)
-	}
-	return blocks
-}
-
-function sortBlocksForFastBreak(bot, blocks) {
-	const p = bot?.entity?.position
-
-	return blocks.sort((a, b) => {
-		if (a.position.y !== b.position.y) return b.position.y - a.position.y
-		if (!p) return Math.random() - 0.5
-		return dist2(p, a.position) - dist2(p, b.position)
-	})
-}
-
-/**
- * Fast break mode:
- * - stands near the object
- * - locks camera
- * - breaks 3-6 blocks in a burst ("holding LMB" look)
- * - dig() with short timeout + /setblock air fallback
- */
 async function fastBreakVisibleFlagBlocks({
 	bot,
 	rcon,
@@ -183,143 +238,225 @@ async function fastBreakVisibleFlagBlocks({
 }) {
 	const cfg = behavior
 	const commandBus = rcon || bot
+	const startedAt = Date.now()
+	let lastProgressAt = startedAt
+	let broken = 0
+	let fallbackBroken = 0
+	let skippedAir = 0
+	let rescans = 0
+	let leftovers = 0
+	let loops = 0
+	let stopReason = null
+	let currentSide = null
+	let currentPosition = bot?.entity?.position
+		? new Vec3(
+				bot.entity.position.x,
+				bot.entity.position.y,
+				bot.entity.position.z
+		  )
+		: null
 
 	await applyFastMiningSetup({ bot, rcon: commandBus })
 	try {
 		if (bot.creative?.startFlying) bot.creative.startFlying()
 	} catch {}
 
-	const targetBlock = objectEvent?.scanExisting
-		? null
-		: getCountryBlock(objectEvent?.country)
-	let broken = 0
-	let fallbackBroken = 0
-	let loops = 0
+	async function loadPositions() {
+		return await findObjectBlocks({
+			bot,
+			objectEvent: {
+				...objectEvent,
+				scanExisting: true,
+			},
+			arena: normalizeArenaForScan(),
+		})
+	}
 
-	while (loops < 250) {
+	function timedOut() {
+		const now = Date.now()
+		if (now - startedAt > (cfg.maxEventMs ?? 60000)) {
+			stopReason = 'max_event_ms'
+			return true
+		}
+		if (now - lastProgressAt > (cfg.noProgressTimeoutMs ?? 10000)) {
+			stopReason = 'no_progress_timeout'
+			return true
+		}
+		return false
+	}
+
+	const maxPasses = cfg.maxPasses ?? cfg.maxBreakPasses ?? 8
+	const maxBlocksPerPass = cfg.maxBlocksPerPass ?? 1000
+
+	for (let pass = 1; pass <= maxPasses; pass++) {
 		if (objectEvent?.cancelled) {
-			return { ok: false, cancelled: true, broken, fallbackBroken, loops }
+			stopReason = 'cancelled'
+			break
 		}
-		loops += 1
+		if (timedOut()) break
 
-		let positions = []
-		try {
-			positions = await findObjectBlocks({
-				bot,
-				objectEvent,
-				arena: normalizeArenaForScan(),
-			})
-		} catch {
-			positions = []
-		}
+		loops = pass
+		let passBroken = 0
+		const positions = await loadPositions()
+		console.log(`[BREAK] pass=${pass} found=${positions.length}`)
 
 		if (!positions.length) {
-			// Expand to entire arena stack area.
-			positions = await scanArenaForFlagBlocks({
-				bot,
-				arena: normalizeArenaForScan(),
-			})
-			positions.fallback = true
+			leftovers = 0
+			return {
+				ok: true,
+				broken,
+				fallbackBroken,
+				skippedAir,
+				rescans,
+				leftovers,
+				passes: pass,
+				loops,
+				stopReason,
+			}
 		}
 
-		const blocks = await resolvePositionsToBlocks(bot, positions)
-		if (!blocks.length) break
+		const bounds = calculateBounds(positions)
+		if (!bounds) break
 
-		const useStrictTarget =
-			positions.fallback !== true &&
-			targetBlock &&
-			blocks.some(block => block.name === targetBlock)
-		const ordered = sortBlocksForFastBreak(bot, blocks)
-		const groups = groupBlocks(ordered, { min: 3, max: 6 })
+		console.log(
+			`[BREAK] bounds min=${bounds.minX},${bounds.minY},${bounds.minZ} max=${bounds.maxX},${bounds.maxY},${bounds.maxZ}`
+		)
 
-		for (const group of groups) {
+		const centerTarget = boundsCenter(bounds)
+		const outsidePositions = orderedOutsidePositions(
+			getOutsideBreakPositions({ bounds })
+		)
+
+		for (const targetOutside of outsidePositions) {
+			const { side, position } = targetOutside
 			if (objectEvent?.cancelled) {
-				return { ok: false, cancelled: true, broken, fallbackBroken, loops }
+				stopReason = 'cancelled'
+				break
 			}
+			if (timedOut()) break
+			if (passBroken >= maxBlocksPerPass) break
 
-			// Group might become invalid while we dig (gravity). Filter at runtime.
-			const live = group
-				.map(b => bot.blockAt(b.position))
-				.filter(b => b && b.name !== 'air' && FLAG_BLOCKS.has(b.name))
+			console.log(`[MOVE] cinematic fly start side=${side}`)
 
-			if (!live.length) continue
+			const layerOutsidePositions = sameLayerOutsidePositions(
+				outsidePositions,
+				position.y
+			)
+			const route = createOutsideRoute({
+				fromSide: currentSide,
+				toSide: side,
+				outsidePositions: layerOutsidePositions,
+			})
+			const waypoints = route.length ? route : [position]
 
-			// Center block for camera lock + approach.
-			const center = live[Math.floor(live.length / 2)]
-			const centerTarget = vecCenter(center.position)
+			for (const waypoint of waypoints) {
+				currentPosition = await cinematicFlyTo({
+					bot,
+					rcon: commandBus,
+					from: currentPosition || bot.entity.position,
+					to: waypoint,
+					lookTarget: centerTarget,
+					bounds,
+					options: cfg,
+				}).catch(() => currentPosition || waypoint)
+			}
+			currentSide = side
 
 			if (cfg.cameraLockEnabled) setCameraTarget(centerTarget)
+			try {
+				await bot.lookAt(centerTarget, true)
+			} catch {}
 
-			// Move/teleport near once per burst.
-			const viewPos = pickViewPosition(bot, center.position, objectEvent)
-			await teleportInSteps({
-				bot,
-				rcon: rcon,
-				botName: bot?.username,
-				targetPos: viewPos,
-				lookTarget: centerTarget,
-				cfg,
-			}).catch(() => {})
-
-			await smoothLookAt(bot, centerTarget, {
-				durationMs: cfg.lookAtBlockDurationMs,
-				jitter: 0,
-			})
-
-			for (const block of live) {
-				if (objectEvent?.cancelled) {
-					return { ok: false, cancelled: true, broken, fallbackBroken, loops }
-				}
-
-				const current = bot.blockAt(block.position)
-				if (!current || current.name === 'air') continue
-				if (!FLAG_BLOCKS.has(current.name)) continue
-				if (
-					useStrictTarget &&
-					targetBlock &&
-					current.name !== targetBlock &&
-					objectEvent?.scanExisting !== true
-				) {
-					continue
-				}
-
-				if (cfg.cameraLockEnabled) {
-					setCameraTarget(vecCenter(current.position))
-				}
-
-				if (cfg.preBreakPauseMs > 0) await sleep(cfg.preBreakPauseMs)
-				const result = await digBlockFast({
-					bot,
-					rcon,
-					block: current,
-					cfg,
-				})
-				if (result.ok) {
-					broken += 1
-					if (result.fallback) fallbackBroken += 1
-					onProgress?.({
-						broken,
-						fallbackBroken,
-						block: current,
-						fallback: result.fallback,
-					})
-				}
-
-				await sleep(randInt(5, 15))
-				if (cfg.breakDelayMs > 0) await sleep(cfg.breakDelayMs)
-				if (cfg.afterBreakPauseMs > 0) await sleep(cfg.afterBreakPauseMs)
+			const state = {
+				objectEvent,
+				loadPositions,
+				timedOut,
+				maxBlocksPerPass,
+				get broken() {
+					return broken
+				},
+				set broken(value) {
+					broken = value
+				},
+				get fallbackBroken() {
+					return fallbackBroken
+				},
+				set fallbackBroken(value) {
+					fallbackBroken = value
+				},
+				get skippedAir() {
+					return skippedAir
+				},
+				set skippedAir(value) {
+					skippedAir = value
+				},
+				get rescans() {
+					return rescans
+				},
+				set rescans(value) {
+					rescans = value
+				},
+				get passBroken() {
+					return passBroken
+				},
+				set passBroken(value) {
+					passBroken = value
+				},
+				get lastProgressAt() {
+					return lastProgressAt
+				},
+				set lastProgressAt(value) {
+					lastProgressAt = value
+				},
+				get stopReason() {
+					return stopReason
+				},
+				set stopReason(value) {
+					stopReason = value
+				},
 			}
 
-			await sleep(randInt(20, 40))
-			if (cfg.burstPauseMs > 0) await sleep(cfg.burstPauseMs)
+			await breakReachableFromSide({
+				bot,
+				rcon: commandBus,
+				side,
+				cfg,
+				onProgress,
+				state,
+			})
 		}
+
+		const afterPass = await loadPositions()
+		leftovers = afterPass.length
+		if (!leftovers) break
+
+		if (passBroken === 0) console.log('[BREAK] no progress this pass')
+	}
+
+	const finalPositions = await loadPositions()
+	leftovers = finalPositions.length
+
+	if (leftovers > 0) {
+		console.log(`[BREAK] fallback cleanup leftovers=${leftovers}`)
+		fallbackBroken += await fallbackCleanup({
+			bot,
+			rcon: commandBus,
+			positions: finalPositions,
+		})
+		leftovers = (await loadPositions()).length
 	}
 
 	return {
-		ok: true,
+		ok: stopReason !== 'cancelled',
+		cancelled: stopReason === 'cancelled',
 		broken,
 		fallbackBroken,
+		skippedAir,
+		rescans,
+		leftovers,
+		passes: loops,
 		loops,
+		stopReason,
 	}
 }
 

@@ -5,8 +5,11 @@ const { randomChaos, expensiveGiftWeather } = require('../effects/chaosEvents')
 const { spawnTntNearBot } = require('../effects/spawnTntNearBot')
 const { lightningBurst, thunderSounds } = require('../effects/lightning')
 const { fireworksBurst } = require('../effects/fireworks')
-const { scanArenaForFlagBlocks } = require('../core/arenaScanner')
 const { normalizeGiftName, resolveGift } = require('./resolveGift')
+
+function delay(ms) {
+	return new Promise(resolve => setTimeout(resolve, ms))
+}
 
 function extractGiftPayload(input = {}) {
 	const data = input.data || input
@@ -44,7 +47,6 @@ function createGiftHandlers({
 	arena = arenaForScan(),
 } = {}) {
 	const giftTimes = []
-	let lastCleanupAt = 0
 
 	function registerGiftRush() {
 		const now = Date.now()
@@ -69,33 +71,6 @@ function createGiftHandlers({
 		}
 	}
 
-	async function maybeScheduleCleanup() {
-		if (!breakQueue) return
-		const idle =
-			breakQueue.isBreaking === false &&
-			Array.isArray(breakQueue.queue) &&
-			breakQueue.queue.length === 0
-		if (!idle) return
-
-		const now = Date.now()
-		if (now - lastCleanupAt < 6000) return
-
-		const positions = await scanArenaForFlagBlocks({ bot, arena })
-		if (!positions.length) return
-
-		lastCleanupAt = now
-		console.log(
-			`[GIFTS] arena has leftover flag blocks (${positions.length}), scheduling cleanup`
-		)
-
-		breakQueue.add({
-			id: `cleanup_${Date.now()}`,
-			type: 'CLEANUP_EXISTING_FLAGS',
-			country: 'cleanup',
-			scanExisting: true,
-		})
-	}
-
 	async function runResolvedEffects(resolved, objectEvent) {
 		const effects = resolved?.effects || []
 		if (!effects.length) return
@@ -103,16 +78,19 @@ function createGiftHandlers({
 		for (const effect of effects) {
 			try {
 				if (effect === 'tnt_chaos') {
+					await delay(700)
 					await spawnTntNearBot({
 						bot,
 						rcon,
 						fuse: 60,
 						source: resolved.key,
 						label: resolved.key,
+						objectEvent,
 					})
 				} else if (effect === 'lightning') {
+					await delay(700)
 					await thunderSounds({ rcon, objectEvent })
-					await lightningBurst({ rcon, objectEvent, min: 3, max: 3, radius: 7 })
+					await lightningBurst({ bot, rcon, objectEvent, min: 2, max: 4, radius: 7 })
 				} else if (effect === 'fireworks') {
 					await fireworksBurst({
 						rcon,
@@ -155,11 +133,7 @@ function createGiftHandlers({
 		}
 
 		spawnQueue.add(objectEvent)
-
-		// Auto-break safety: if bot missed a flag before, schedule cleanup.
-		maybeScheduleCleanup().catch(err =>
-			console.log('[GIFTS] cleanup check failed:', err?.message || err)
-		)
+		breakQueue?.ensureProcessing?.()
 
 		// Always run tier-specific effects (if any)
 		runResolvedEffects(resolved, objectEvent).catch(() => {})

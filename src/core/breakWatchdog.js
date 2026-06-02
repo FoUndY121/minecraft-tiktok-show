@@ -1,33 +1,20 @@
-const { scanArenaForFlagBlocks } = require('./arenaScanner')
+const { scanFlagBlocksInArena } = require('./scanFlagBlocksInArena')
 
 function startBreakWatchdog({
 	bot,
 	arena,
 	breakQueue,
+	spawnQueue = null,
 	intervalMs = 5000,
-	cooldownMs = 10000,
 	stuckMs = 15000,
 	logger = console,
 } = {}) {
 	let timer = null
-	let lastCleanupAt = 0
 	let lastEventId = null
 	let lastBrokenCount = 0
 	let lastBrokenCountAt = 0
-
-	function idleTimeoutFor(totalBlocks = 0) {
-		if (totalBlocks > 500) return 45000
-		if (totalBlocks > 300) return 30000
-		return stuckMs
-	}
-
-	function hasCleanupQueued() {
-		if (breakQueue.currentEvent?.type === 'CLEANUP_EXISTING_FLAGS') return true
-		if (!Array.isArray(breakQueue.queue)) return false
-		return breakQueue.queue.some(
-			event => event?.type === 'CLEANUP_EXISTING_FLAGS'
-		)
-	}
+	let lastWarningAt = 0
+	let lastLeftoverScheduleAt = 0
 
 	async function tick() {
 		if (!bot || !breakQueue) return
@@ -55,16 +42,12 @@ function startBreakWatchdog({
 
 				const lastProgressAt = state?.lastProgressAt || lastBrokenCountAt || now
 				const idleFor = Math.max(now - lastProgressAt, now - lastBrokenCountAt)
-				const timeoutMs = idleTimeoutFor(state?.totalBlocks || 0)
 
-				if (idleFor > timeoutMs) {
+				if (idleFor > 20000 && now - lastWarningAt > 20000) {
+					lastWarningAt = now
 					logger.log(
-						`[WATCHDOG] break queue no progress id=${currentId} broken=${brokenCount}/${state?.totalBlocks || 0} idleMs=${idleFor}, forcing finish`
+						`[WATCHDOG] warning: break queue no progress id=${currentId} broken=${brokenCount}/${state?.totalBlocks || 0} idleMs=${idleFor}`
 					)
-					breakQueue.forceFinishCurrent?.('watchdog_stuck')
-					lastEventId = null
-					lastBrokenCount = 0
-					lastBrokenCountAt = 0
 				}
 				return
 			}
@@ -73,32 +56,28 @@ function startBreakWatchdog({
 			lastBrokenCount = 0
 			lastBrokenCountAt = 0
 
-			const idle =
-				breakQueue.isBreaking === false &&
-				Array.isArray(breakQueue.queue) &&
-				breakQueue.queue.length === 0
+			if (now - lastLeftoverScheduleAt < 10000) return
+			if (breakQueue.queue.length > 0) return
+			if (spawnQueue?.isSpawning === true) return
 
-			if (!idle) return
-			if (hasCleanupQueued()) return
-			if (now - lastCleanupAt < cooldownMs) return
-
-			const positions = await scanArenaForFlagBlocks({ bot, arena })
+			const positions = await scanFlagBlocksInArena({
+				bot,
+				arena,
+				mode: 'cleanup',
+			})
 			if (!positions.length) return
-			if (breakQueue.isBreaking === true) return
-			if (breakQueue.queue?.length > 0) return
-			if (hasCleanupQueued()) return
-
-			lastCleanupAt = now
+			lastLeftoverScheduleAt = now
 
 			logger.log(
-				`[WATCHDOG] found leftover flag blocks (${positions.length}), scheduling cleanup`
+				`[WATCHDOG] leftover blocks found, scheduling visual break event count=${positions.length}`
 			)
-
 			breakQueue.add({
-				id: `cleanup_${Date.now()}`,
-				type: 'CLEANUP_EXISTING_FLAGS',
-				country: 'cleanup',
+				id: `leftover_break_${Date.now()}`,
+				type: 'BREAK_LEFTOVERS',
 				scanExisting: true,
+				expandedSearch: true,
+				country: 'leftovers',
+				createdAt: Date.now(),
 			})
 		} catch (err) {
 			logger.log('[WATCHDOG] scan error:', err?.message || err)

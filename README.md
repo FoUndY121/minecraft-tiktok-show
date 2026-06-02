@@ -1,6 +1,6 @@
-# Minecraft TikTok Show MVP
+﻿# Minecraft TikTok Show MVP
 
-Gifts create compact 7 x 7 x 7 flag objects that fall into one fixed arena:
+Gifts create compact flag objects that fall into one fixed arena:
 
 ```js
 const ARENA = {
@@ -27,7 +27,7 @@ curl -X POST http://localhost:3001/gift \
 
 Supported gifts (STRICT tier mapping):
 
-Cheap (4x4x4 objects)
+Cheap (4x4x2 objects)
 
 - `gg` -> Germany
 - `rose` -> Ukraine
@@ -38,7 +38,7 @@ Cheap (4x4x4 objects)
 - `poland` -> Poland
 - `lithuania` -> Lithuania
 
-Medium (5x5x5 objects)
+Medium (5x5x4 objects)
 
 - `cap` -> Germany
 - `hand heart` -> Ukraine
@@ -46,15 +46,27 @@ Medium (5x5x5 objects)
 - `sunglasses` -> Italy
 - `donut` -> Russia
 
-Expensive (7x7x7 objects + effects)
+Expensive (7x7x6 objects + effects)
 
-- `galaxy` -> USA + TNT chaos
-- `lion` -> Germany + lightning
+- `` -> USA + falling TNT above flag
+- `lion` -> Germany + lightning removes around 5 flag blocks
 - `universe` -> Ukraine + fireworks
-- `rocket` -> USA + TNT chaos
+- `rocket` -> USA + falling TNT above flag
 - `castle` -> France
-- `money gun` -> Russia + TNT chaos
-- `drama queen` -> Russia + lightning
+- `money gun` -> Russia + falling TNT above flag
+- `drama queen` -> Russia + lightning removes around 5 flag blocks
+
+Chaos gifts:
+
+- `galaxy`: USA flag + falling TNT above flag
+- `rocket`: USA flag + falling TNT above flag
+- `money gun`: Russia flag + falling TNT above flag
+- `lion`: Germany flag + lightning removes around 5 flag blocks
+- `drama queen`: Russia flag + lightning removes around 5 flag blocks
+- `universe`: Ukraine flag + fireworks
+- `castle`: France flag
+
+All chaos effects remove only `FLAG_BLOCKS` and never destroy the platform.
 
 Status:
 
@@ -129,6 +141,16 @@ If `scandi` does not move:
 - check RCON host, port, and password
 - check that `scandi` is online on the server
 - check `/status` and look at the `cameraSync` block
+
+### OBS Vertical Setup
+
+- Canvas/base resolution: `1080x1920` for TikTok vertical.
+- Output scaled resolution: `720x1280` or `1080x1920`.
+- FPS: `60`.
+- Source: Game Capture or Window Capture for Minecraft.
+- Audio: enable Desktop Audio so Minecraft flag music goes into OBS.
+- In Minecraft, press `F1` to hide the HUD.
+- OBS should capture the Minecraft client window used by `scandi`.
 
 ## Resource Pack Mapping
 
@@ -238,55 +260,33 @@ resource-pack-template/assets/minecraft/sounds/flags/
 
 Use short 5-15 second versions, not full anthems, so overlapping gifts do not turn the stream audio into noise.
 
-## TikTok Live Setup
+## Real TikTok Live Setup
 
-This project exposes a simple HTTP API. Any TikTok Live connector (your own script / OBS tool / bridge) can forward events into it.
+The bot can connect directly to TikTok Live through `tiktok-live-connector`.
 
-1. Start the bot:
-
-```bash
-npm start
-```
-
-2. Forward TikTok gift events into:
-
-- `POST http://localhost:3001/gift`
-- JSON body example:
-
-```json
-{ "gift": "gg", "username": "viewer" }
-```
-
-3. Forward like spikes into:
-
-- `POST http://localhost:3001/likes`
-- JSON body example:
-
-```json
-{ "count": 200, "username": "viewer" }
-```
-
-If you don’t have a TikTok connector yet, use the curl tests below to validate the full pipeline.
-
-# Real TikTok Live Setup
-
-1. Install dependencies:
+1. Install:
 
 ```bash
+npm install tiktok-live-connector
 npm install
 ```
 
-2. Add your TikTok Live username to `.env`:
+2. Add TikTok Live settings to `.env`:
 
 ```env
-TIKTOK_USERNAME=your_tiktok_username
+ENABLE_TIKTOK_LIVE=true
+TIKTOK_USERNAME=yourname
 ```
 
-Use the unique TikTok username from the live URL, without `@`.
+`TIKTOK_USERNAME` is the unique TikTok username without `@`. If your link is `tiktok.com/@myname`, use:
 
-3. Start your TikTok stream.
+```env
+TIKTOK_USERNAME=myname
+```
 
-4. Start the Minecraft bot:
+3. Start TikTok Live on your phone or in TikTok Live Studio.
+
+4. Start Node:
 
 ```bash
 npm start
@@ -295,9 +295,16 @@ npm start
 5. In the console, check for:
 
 ```txt
-[TIKTOK] connected
-[TIKTOK] roomId=...
+[TIKTOK] connecting to @yourname
+[TIKTOK] connected roomId=...
 [TIKTOK] username=...
+```
+
+6. Send a test gift in TikTok Live. The Node logs should include:
+
+```txt
+[TIKTOK] gift raw=...
+[GIFT] raw=...
 ```
 
 Real TikTok events use the same internal flow as the curl tests:
@@ -306,16 +313,24 @@ Real TikTok events use the same internal flow as the curl tests:
 - likes call the existing like tracker
 - follows show a title and fireworks near the bot
 - shares spawn lightning near the arena
+- streak gift ticks are skipped until `repeatEnd`, so one completed gift creates one spawn event
+- every 200 likes triggers falling TNT above the active flag
 
-If `TIKTOK_USERNAME` is missing or still set to the placeholder, TikTok Live is disabled and the HTTP test endpoints continue to work.
+If `ENABLE_TIKTOK_LIVE` is not `true`, or `TIKTOK_USERNAME` is missing/still a placeholder, TikTok Live is disabled and the HTTP test endpoints continue to work.
+
+Reconnect is automatic:
+
+```txt
+[TIKTOK] disconnected, reconnecting in 5000ms
+```
 
 ## TikTok Gift Setup (Tier System)
 
 1 gift = 1 spawn event (no partial matching).
 
-- Cheap gift -> `4x4x4`
-- Medium gift -> `5x5x5`
-- Expensive gift -> `7x7x7`
+- Cheap gift -> `4x4x2`
+- Medium gift -> `5x5x4`
+- Expensive gift -> `7x7x6`
 
 ## Test Endpoints
 
@@ -333,7 +348,35 @@ curl -X POST http://localhost:3001/likes -H "Content-Type: application/json" -d 
 curl -X POST http://localhost:3001/test-sound -H "Content-Type: application/json" -d '{"sound":"flags.russia"}'
 
 curl -X POST http://localhost:3001/test-country-sound -H "Content-Type: application/json" -d '{"country":"ukraine"}'
+
+curl -X POST http://localhost:3001/cleanup-arena
 ```
+
+`/cleanup-arena` is manual only. It removes only `FLAG_BLOCKS` and is never called automatically during the stream.
+
+### AFK Recovery Test
+
+1. Start bot.
+
+2. Send gift:
+
+```bash
+curl -X POST http://localhost:3001/gift -H "Content-Type: application/json" -d '{"gift":"gg","username":"test1"}'
+```
+
+3. Wait 3 minutes.
+
+4. Send another gift:
+
+```bash
+curl -X POST http://localhost:3001/gift -H "Content-Type: application/json" -d '{"gift":"rose","username":"test2"}'
+```
+
+Expected:
+
+- second flag spawns
+- breakQueue wakes up
+- bot starts breaking without restart
 
 ## Flag Music Debug
 

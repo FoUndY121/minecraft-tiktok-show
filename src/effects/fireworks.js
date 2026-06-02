@@ -1,6 +1,7 @@
 const ARENA = require('../config/arena')
 const behavior = require('../config/botBehavior')
 const { safeSend } = require('../rcon')
+const { markArenaDirty } = require('../core/arenaDirty')
 
 const COLORS = [
 	11743532,
@@ -51,6 +52,7 @@ async function spawnFireworksAroundObject({ rcon, objectEvent, count = 3, delayM
 		await launchFirework({ rcon, x, y, z })
 		await delay(randInt(50, delayMs))
 	}
+	markArenaDirty('fireworks')
 }
 
 async function fireworksBurst({ rcon, objectEvent, min, max, delayMs = 120 } = {}) {

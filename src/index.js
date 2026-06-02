@@ -16,9 +16,11 @@ const { CameraSync } = require('./camera/cameraSync')
 const { startCameraLock, stopCameraLock } = require('./bot/camera/cameraLock')
 const { applyFastMiningSetup } = require('./bot/setup/applyFastMiningSetup')
 const { LikeTracker } = require('./tiktok/likeTracker')
-const { spawnTntAboveArena } = require('./effects/spawnTntNearBot')
+const { spawnFallingTntAboveFlag } = require('./effects/spawnFallingTntAboveFlag')
 const { startKeepDay } = require('./effects/keepDay')
 const { startBreakWatchdog } = require('./core/breakWatchdog')
+const { startBreakIdleWatchdog } = require('./core/breakIdleWatchdog')
+const { runStartupCleanup } = require('./core/startupCleanup')
 const { playFlagMusic } = require('./effects/playFlagMusic')
 const { connectTikTokLive } = require('./tiktok/connectTikTokLive')
 
@@ -105,20 +107,6 @@ function botPose(bot) {
 	}
 }
 
-async function clearArena(commandBus) {
-	const x1 = ARENA.origin.x - 2
-	const y1 = ARENA.groundY
-	const z1 = ARENA.origin.z - 3
-	const x2 = ARENA.origin.x + ARENA.width + 2
-	const y2 = ARENA.origin.y + ARENA.height * 6 + 8
-	const z2 = ARENA.origin.z + ARENA.depth + 2
-
-	await safeRconCommand(
-		commandBus,
-		`/fill ${x1} ${y1} ${z1} ${x2} ${y2} ${z2} minecraft:air`
-	)
-}
-
 async function main() {
 	console.log('Starting Minecraft TikTok Show object MVP')
 
@@ -187,10 +175,10 @@ async function main() {
 	const likeTracker = new LikeTracker({
 		threshold: 200,
 		onThreshold: data => {
-			spawnTntAboveArena({
+			spawnFallingTntAboveFlag({
 				bot,
 				rcon: commandBus,
-				fuse: 70,
+				fuse: 40,
 				source: 'likes',
 				label: '200 likes',
 				arena: ARENA,
@@ -235,8 +223,21 @@ async function main() {
 			maxStack: 6,
 		},
 		breakQueue,
+		spawnQueue,
 		intervalMs: 5000,
-		cooldownMs: 8000,
+		logger: console,
+	})
+	const idleWatchdog = startBreakIdleWatchdog({
+		bot,
+		arena: {
+			origin: ARENA.origin,
+			maxWidth: ARENA.width,
+			maxDepth: ARENA.depth,
+			maxHeight: ARENA.height,
+			maxStack: 6,
+		},
+		breakQueue,
+		intervalMs: 5000,
 		logger: console,
 	})
 
@@ -272,6 +273,8 @@ async function main() {
 	startMinecraftChatTriggers({ bot, handleGift: guardedHandleGift })
 
 	tiktokLive = connectTikTokLive({
+		enabled:
+			String(process.env.ENABLE_TIKTOK_LIVE || '').toLowerCase() === 'true',
 		username: process.env.TIKTOK_USERNAME,
 		handleGift: guardedHandleGift,
 		likeTracker,
@@ -293,6 +296,16 @@ async function main() {
 			spawnQueueRunning: spawnQueue.isSpawning,
 			breakQueueSize: breakQueue.size(),
 			breakQueueRunning: breakQueue.isBreaking,
+			breakQueue: {
+				isBreaking: breakQueue.isBreaking,
+				queueLength: breakQueue.size(),
+				currentEventId: breakQueue.currentEvent?.id || null,
+				currentEventCountry: breakQueue.currentEvent?.country || null,
+			},
+			spawnQueue: {
+				isSpawning: spawnQueue.isSpawning,
+				queueLength: spawnQueue.size(),
+			},
 			stackIndex: stackManager.currentStackIndex,
 			cameraSync: cameraSync.status(),
 			tiktokLive: tiktokLive?.status?.() || null,
@@ -343,6 +356,49 @@ async function main() {
 				buffer: result.buffer,
 				threshold: likeTracker.threshold,
 			})
+		} catch (err) {
+			return res
+				.status(500)
+				.json({ ok: false, error: err?.message || String(err) })
+		}
+	})
+
+	app.post('/test-falling-tnt', async (req, res) => {
+		try {
+			if (!botReady && !bot?.entity?.position) {
+				const ok = await waitForBotReady(5000)
+				if (!ok) return res.status(503).json({ ok: false, error: 'Bot not ready' })
+			}
+
+			const result = await spawnFallingTntAboveFlag({
+				bot,
+				rcon: commandBus,
+				arena: ARENA,
+				fuse: 40,
+				source: 'test_endpoint',
+				label: 'test TNT',
+			})
+			return res.json(result)
+		} catch (err) {
+			return res
+				.status(500)
+				.json({ ok: false, error: err?.message || String(err) })
+		}
+	})
+
+	app.post('/cleanup-arena', async (req, res) => {
+		try {
+			if (!botReady && !bot?.entity?.position) {
+				const ok = await waitForBotReady(5000)
+				if (!ok) return res.status(503).json({ ok: false, error: 'Bot not ready' })
+			}
+
+			const result = await runStartupCleanup({
+				bot,
+				rcon: commandBus,
+				arena: ARENA,
+			})
+			return res.json({ ok: true, removed: result.removed })
 		} catch (err) {
 			return res
 				.status(500)
@@ -405,6 +461,7 @@ async function main() {
 		stopKeepDay = startKeepDay(commandBus)
 		startCameraLock({ bot, rcon: commandBus })
 		watchdog.start()
+		idleWatchdog.start()
 		if (cameraSync.enabled && process.env.CAMERA_USERNAME) {
 			await safeRconCommand(
 				commandBus,
@@ -412,7 +469,7 @@ async function main() {
 			)
 			cameraSync.start()
 		}
-		await clearArena(commandBus)
+		await runStartupCleanup({ bot, rcon: commandBus, arena: ARENA })
 		await safeRconCommand(commandBus, '/say [TikTokShow] Object arena is ready')
 		bot.chat('TikTok object MVP ready')
 	})
@@ -423,6 +480,7 @@ async function main() {
 		stopCameraLock()
 		cameraSync.stop()
 		watchdog.stop()
+		idleWatchdog.stop()
 		tiktokLive?.stop?.()
 		try {
 			if (rcon) await rcon.end()

@@ -3,20 +3,7 @@ const { safeRconCommand } = require('../rcon')
 const { flyToPosition } = require('../bot/movement/flyToPosition')
 const reactions = require('../bot/reactions')
 const defaultBehavior = require('../config/botBehavior')
-
-const FLAG_BLOCKS = [
-	'sand',
-	'red_sand',
-	'white_concrete_powder',
-	'blue_concrete_powder',
-	'green_concrete_powder',
-	'yellow_concrete_powder',
-	'black_concrete_powder',
-	'gravel',
-	'orange_concrete_powder',
-	'light_blue_concrete_powder',
-	'gray_concrete_powder',
-]
+const { FLAG_BLOCKS } = require('../config/flagBlocks')
 
 function sleep(ms) {
 	return new Promise(resolve => setTimeout(resolve, ms))

@@ -8,7 +8,7 @@
  */
 
 const GIFT_MAP = {
-	// Cheap gifts -> small 4x4x4
+	// Cheap gifts -> small 4x4x2
 	rose: { country: 'ukraine', size: 'small' },
 	gg: { country: 'germany', size: 'small' },
 	perfume: { country: 'russia', size: 'small' },
@@ -18,14 +18,14 @@ const GIFT_MAP = {
 	poland: { country: 'poland', size: 'small' },
 	lithuania: { country: 'lithuania', size: 'small' },
 
-	// Medium gifts -> 5x5x5
+	// Medium gifts -> 5x5x4
 	cap: { country: 'germany', size: 'medium' },
 	'hand heart': { country: 'ukraine', size: 'medium' },
 	'love you': { country: 'poland', size: 'medium' },
 	sunglasses: { country: 'italy', size: 'medium' },
 	donut: { country: 'russia', size: 'medium' },
 
-	// Expensive gifts -> large 7x7x7 (+ instant effects)
+	// Expensive gifts -> large 7x7x6 (+ instant effects)
 	galaxy: { country: 'usa', size: 'large', effects: ['tnt_chaos'] },
 	lion: { country: 'germany', size: 'large', effects: ['lightning'] },
 	universe: { country: 'ukraine', size: 'large', effects: ['fireworks'] },

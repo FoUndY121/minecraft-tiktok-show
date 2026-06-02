@@ -1,10 +1,13 @@
 const ARENA = require('../config/arena')
 const objectSizes = require('../config/objectSizes')
 const { safeSend } = require('../rcon')
+const { FLAG_BLOCKS } = require('../config/flagBlocks')
 const { spawnFallingObject } = require('../objects/spawnFallingObject')
+const { waitForSpawnedFlagBlocks } = require('../objects/waitForSpawnedFlagBlocks')
 const reactions = require('../bot/reactions')
 const { StackManager } = require('./stackManager')
 const { EventRegistry } = require('./eventRegistry')
+const behavior = require('../config/botBehavior')
 
 let activeStackManager = new StackManager({
 	baseOrigin: ARENA.origin,
@@ -90,10 +93,12 @@ async function clearStackArea(commandBus, stackManager, objectEvent) {
 		depth: Math.max(ARENA.depth, objectEvent.depth),
 	})
 
-	await safeSend(
-		commandBus,
-		`/fill ${bounds.x1} ${bounds.y1} ${bounds.z1} ${bounds.x2} ${bounds.y2} ${bounds.z2} minecraft:air`
-	)
+	for (const block of FLAG_BLOCKS) {
+		await safeSend(
+			commandBus,
+			`/fill ${bounds.x1} ${bounds.y1} ${bounds.z1} ${bounds.x2} ${bounds.y2} ${bounds.z2} minecraft:air replace minecraft:${block}`
+		)
+	}
 }
 
 class SpawnQueue {
@@ -112,6 +117,7 @@ class SpawnQueue {
 		setStackManager(stackManager)
 		this.queue = []
 		this.isSpawning = false
+		this.lastSpawnAt = 0
 	}
 
 	add(event) {
@@ -123,6 +129,7 @@ class SpawnQueue {
 		}
 
 		this.queue.push(objectEvent)
+		this.lastSpawnAt = Date.now()
 
 		console.log(
 			`[SPAWN_QUEUE] add id=${objectEvent.id} country=${
@@ -130,18 +137,20 @@ class SpawnQueue {
 			} size=${objectEvent.size || 'default'} queue=${this.queue.length}`
 		)
 
+		this.ensureProcessing()
+
+		return objectEvent
+	}
+
+	ensureProcessing() {
+		if (this.isSpawning || this.queue.length === 0) return false
+
 		this.processNext().catch(err => {
 			this.isSpawning = false
 			console.log('[SPAWN_QUEUE] process error:', err?.message || err)
-			this.processNext().catch(nextErr =>
-				console.log(
-					'[SPAWN_QUEUE] recovery failed:',
-					nextErr?.message || nextErr
-				)
-			)
+			this.ensureProcessing()
 		})
-
-		return objectEvent
+		return true
 	}
 
 	async processNext() {
@@ -199,12 +208,26 @@ class SpawnQueue {
 				rcon: this.rcon,
 				objectEvent,
 			})
+			this.lastSpawnAt = Date.now()
 			this.stackManager.markObjectSpawned(spawnedEvent)
 			console.log(
 				`[SPAWN_QUEUE] finish id=${objectEvent.id} country=${objectEvent.country}`
 			)
 
-			if (this.breakQueue) this.breakQueue.add(spawnedEvent)
+			if (this.breakQueue) {
+				const blocks = await waitForSpawnedFlagBlocks({
+					bot: this.bot,
+					objectEvent: spawnedEvent,
+					timeoutMs: behavior.spawnWaitTimeoutMs ?? 5000,
+					intervalMs: behavior.spawnWaitIntervalMs ?? 250,
+				})
+				if (blocks.length === 0) {
+					spawnedEvent.scanExisting = true
+					spawnedEvent.expandedSearch = true
+				}
+				this.breakQueue.add(spawnedEvent)
+				this.breakQueue.ensureProcessing?.()
+			}
 		} catch (err) {
 			console.log(
 				`[SPAWN_QUEUE] error object ${objectEvent.id}/${objectEvent.country}:`,
@@ -214,11 +237,8 @@ class SpawnQueue {
 		} finally {
 			this.isSpawning = false
 			// Always continue (fix race where queue is appended during finally).
-			if (this.queue.length > 0) {
-				this.processNext().catch(err =>
-					console.log('[SPAWN_QUEUE] next error:', err?.message || err)
-				)
-			}
+			if (this.queue.length > 0) this.ensureProcessing()
+			this.breakQueue?.ensureProcessing?.()
 		}
 	}
 

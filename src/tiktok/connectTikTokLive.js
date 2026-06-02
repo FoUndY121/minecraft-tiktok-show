@@ -1,4 +1,4 @@
-const { WebcastPushConnection } = require('tiktok-live-connector')
+﻿const { WebcastPushConnection } = require('tiktok-live-connector')
 const { safeSend } = require('../rcon')
 const ARENA = require('../config/arena')
 const { launchFirework } = require('../effects/fireworks')
@@ -48,7 +48,9 @@ function isPlaceholderUsername(username) {
 	return (
 		!value ||
 		value === 'your_tiktok_username' ||
-		value === 'твой_ник_в_tiktok'
+		value === 'your_tiktok_unique_id' ||
+		value === 'твой_ник_в_tiktok' ||
+		value === 'С‚РІРѕР№_РЅРёРє_РІ_tiktok'
 	)
 }
 
@@ -106,6 +108,7 @@ async function showShareEffect({ rcon }) {
 }
 
 function connectTikTokLive({
+	enabled = String(process.env.ENABLE_TIKTOK_LIVE || '').toLowerCase() === 'true',
 	username = process.env.TIKTOK_USERNAME,
 	handleGift,
 	likeTracker,
@@ -115,6 +118,19 @@ function connectTikTokLive({
 	logger = console,
 } = {}) {
 	const normalizedUsername = String(username || '').replace(/^@+/, '').trim()
+	if (!enabled) {
+		logger.log('[TIKTOK] disabled: ENABLE_TIKTOK_LIVE is not true')
+		return {
+			start: () => false,
+			stop: () => {},
+			status: () => ({
+				enabled: false,
+				connected: false,
+				username: normalizedUsername || null,
+			}),
+		}
+	}
+
 	if (isPlaceholderUsername(normalizedUsername)) {
 		logger.log('[TIKTOK] disabled: TIKTOK_USERNAME is not set')
 		return {
@@ -177,7 +193,7 @@ function connectTikTokLive({
 				return
 			}
 
-			logger.log(`[TIKTOK] gift ${giftName} from ${sender}`)
+			logger.log(`[TIKTOK] gift raw=${giftName} from=${sender}`)
 			Promise.resolve(
 				handleGift?.({
 					giftName,
@@ -191,7 +207,10 @@ function connectTikTokLive({
 		})
 
 		tiktok.on('like', data => {
-			const likeCount = Math.max(0, Math.floor(Number(data.likeCount) || 0))
+			const likeCount = Math.max(
+				0,
+				Math.floor(Number(data.likeCount || data.count || 1) || 0)
+			)
 			if (!likeCount) return
 
 			const sender = extractUsername(data)
@@ -234,6 +253,7 @@ function connectTikTokLive({
 
 		connecting = true
 		clearReconnectTimer()
+		logger.log(`[TIKTOK] connecting to @${normalizedUsername}`)
 
 		try {
 			connection = new WebcastPushConnection(normalizedUsername)
@@ -244,8 +264,7 @@ function connectTikTokLive({
 			connected = true
 			connecting = false
 
-			logger.log('[TIKTOK] connected')
-			logger.log(`[TIKTOK] roomId=${roomId || 'unknown'}`)
+			logger.log(`[TIKTOK] connected roomId=${roomId || 'unknown'}`)
 			logger.log(`[TIKTOK] username=${normalizedUsername}`)
 			return true
 		} catch (err) {
